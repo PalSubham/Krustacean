@@ -1,0 +1,31 @@
+{
+    "$comment": "Can omit log_dir in case of console logging",
+
+    "udp": [
+        {
+            "upstream_ip": "192.168.1.100",
+            "upstream_port": 53,
+            "orig_port": 53
+        },
+        {
+            "upstream_ip": "192.168.1.100",
+            "upstream_port": 123,
+            "orig_port": 123
+        }
+    ],
+
+    "tcp": [
+        {
+            "upstream_ip": "192.168.1.100",
+            "upstream_port": 53,
+            "orig_port": 53
+        },
+        {
+            "upstream_ip": "192.168.1.100",
+            "upstream_port": 80,
+            "orig_port": 80
+        }
+    ],
+
+    "port": 8080
+}

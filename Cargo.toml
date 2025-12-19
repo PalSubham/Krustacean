@@ -1,0 +1,16 @@
+[package]
+name = "Krustacean"
+version = "0.1.0"
+edition = "2024"
+description = "A transparent proxy for UDP & TCP"
+
+[dependencies]
+tokio = { version = "1", features = [ "rt-multi-thread", "io-util", "net", "macros", "signal", "sync", "fs", "time" ] }
+socket2 = "0.6"
+log = "0.4"
+log4rs = "1.4"
+nix = { version = "0.30", features = [ "socket", "uio", "net", "fs" ] }
+serde = { version = "1", features = [ "derive" ] }
+serde_json = "1"
+sd-notify = "0.4"
+libc = "0.2"
