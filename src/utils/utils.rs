@@ -1,4 +1,5 @@
 use core::result::Result;
+use libc::{SYS_capget, syscall};
 use log::LevelFilter;
 use log4rs::{
     Handle,
@@ -16,7 +17,26 @@ use std::{
 };
 use tokio::fs::read_to_string;
 
-use super::structs::{Configs, LogError};
+use super::{
+    bindings::{__user_cap_data_struct, __user_cap_header_struct, _LINUX_CAPABILITY_VERSION_3, CAP_NET_ADMIN, CAP_NET_BIND_SERVICE},
+    structs::{Configs, LogError},
+};
+
+/// Checks if required capabilities are effective
+#[inline(always)]
+pub(crate) fn is_capable() -> IoResult<bool> {
+    let has_cap_net_admin = match is_cap_effective(CAP_NET_ADMIN) {
+        Ok(c) => c,
+        Err(e) => return Err(e),
+    };
+
+    let has_cap_net_bind_service = match is_cap_effective(CAP_NET_BIND_SERVICE) {
+        Ok(c) => c,
+        Err(e) => return Err(e),
+    };
+
+    Ok(has_cap_net_admin && has_cap_net_bind_service)
+}
 
 /// Read and parse configuration file
 #[inline(always)]
@@ -27,9 +47,7 @@ pub(crate) async fn read_config(path: &PathBuf) -> IoResult<Configs> {
         return Err(Error::new(ErrorKind::InvalidInput, "Provided configuration path is not a file"));
     }
 
-    from_str(&read_to_string(path).await?).map_err(|e| {
-        Error::new(ErrorKind::InvalidData, format!("Failed to deserialize configuration file - {e}"))
-    })
+    from_str(&read_to_string(path).await?).map_err(|e| Error::new(ErrorKind::InvalidData, format!("Failed to deserialize configuration file - {e}")))
 }
 
 const LOG_FILE_NAME: &str = "Krustacean.log";
@@ -37,7 +55,7 @@ const LOG_DIR: &str = "/var/log/Krustacean";
 
 /// Enable logging based on configuration
 #[inline(always)]
-pub(crate) async fn enable_logging(file_logging: bool) -> Result<Handle, LogError> {
+pub(crate) fn enable_logging(file_logging: bool) -> Result<Handle, LogError> {
     let config = match file_logging {
         true => {
             let dir = PathBuf::from(LOG_DIR);
@@ -92,12 +110,34 @@ pub(crate) async fn enable_logging(file_logging: bool) -> Result<Handle, LogErro
     Ok(init_config(config).map_err(|_| LogError::cause("Failed to create logger handle"))?)
 }
 
+/// Metadata header to fetch process capabilities
+const CAP_HEADER: __user_cap_header_struct = __user_cap_header_struct {
+    version: _LINUX_CAPABILITY_VERSION_3,
+    pid: 0, // self
+};
+
+/// Checks if given capability is effective
+fn is_cap_effective(cap: u32) -> IoResult<bool> {
+    let mut data = [__user_cap_data_struct::default(), __user_cap_data_struct::default()];
+
+    let ret = unsafe { syscall(SYS_capget, &CAP_HEADER as *const _, &mut data as *mut _) };
+
+    if ret != 0 {
+        return Err(Error::last_os_error());
+    }
+
+    let data = data;
+    let idx = (cap / 32) as usize;
+    let bit = cap % 32;
+
+    Ok((data[idx].effective & (1 << bit)) != 0)
+}
+
 /// Banner macro to log application banner with version
 macro_rules! banner {
     ($file:literal) => {{
-        let banner = ::core::include_str!($file);
-        let final_banner = banner.replace("@project_version@", ::core::env!("CARGO_PKG_VERSION"));
-        ::log::info!("{}", final_banner);
+        let banner = ::const_format::str_replace!(::core::include_str!($file), "@project_version@", ::core::env!("CARGO_PKG_VERSION"));
+        ::log::info!("{}", banner);
     }};
 }
 

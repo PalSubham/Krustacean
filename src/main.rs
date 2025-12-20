@@ -13,12 +13,25 @@ use crate::{
     },
     utils::{
         structs::Args,
-        utils::{banner, enable_logging, read_config},
+        utils::{banner, enable_logging, is_capable, read_config},
     },
 };
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    let capable = match is_capable() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        },
+    };
+
+    if !capable {
+        eprintln!("Both CAP_NET_ADMIN & CAP_NET_BIND_SERVICE need to be effective");
+        return ExitCode::FAILURE;
+    }
+
     let args = match Args::new() {
         Ok(a) => a,
         Err(e) => {
@@ -35,7 +48,7 @@ async fn main() -> ExitCode {
         },
     };
 
-    let _handle = match enable_logging(args.filelog).await {
+    let _handle = match enable_logging(args.filelog) {
         Ok(handle) => handle,
         Err(e) => {
             eprintln!("{e}");
