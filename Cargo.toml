@@ -3,6 +3,7 @@ name = "Krustacean"
 version = "0.1.0"
 edition = "2024"
 description = "A transparent proxy for UDP & TCP"
+license = "GPL-3.0-or-later"
 
 [dependencies]
 tokio = { version = "1", features = [ "rt-multi-thread", "io-util", "net", "macros", "signal", "sync", "fs", "time" ] }

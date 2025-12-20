@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use log::{error, info};
 use std::{
     io::{Error, ErrorKind, Result},

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use core::convert::Into;
 use log::{error, info, warn};
 use socket2::{Domain, Protocol, SockRef, Socket, Type};

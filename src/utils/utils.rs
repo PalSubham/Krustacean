@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use core::result::Result;
 use libc::{SYS_capget, syscall};
 use log::LevelFilter;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use libc::{IP_RECVORIGDSTADDR, IPPROTO_IP, c_int, c_void, setsockopt, sockaddr_in, socklen_t};
 use log::error;
 use nix::{
