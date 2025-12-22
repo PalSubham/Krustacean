@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use core::result::Result;
-use libc::{SYS_capget, syscall};
+use libc::{SYS_capget, c_int, syscall};
 use log::LevelFilter;
 use log4rs::{
     Handle,
@@ -16,6 +16,8 @@ use std::{
     io::{Error, ErrorKind, Result as IoResult},
     os::unix::fs::PermissionsExt,
     path::PathBuf,
+    process,
+    sync::LazyLock,
 };
 use tokio::fs::read_to_string;
 
@@ -113,10 +115,10 @@ pub(crate) fn enable_logging(file_logging: bool) -> Result<Handle, LogError> {
 }
 
 /// Metadata header to fetch process capabilities
-const CAP_HEADER: __user_cap_header_struct = __user_cap_header_struct {
+static CAP_HEADER: LazyLock<__user_cap_header_struct> = LazyLock::new(|| __user_cap_header_struct {
     version: _LINUX_CAPABILITY_VERSION_3,
-    pid: 0, // self
-};
+    pid: process::id() as c_int,
+});
 
 /// Checks if given capability is effective
 fn is_cap_effective(cap: u32) -> IoResult<bool> {

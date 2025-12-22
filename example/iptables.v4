@@ -1,0 +1,9 @@
+iptables -t mangle -A PREROUTING -p tcp -m socket --transparent -m set --match-set krustacean_tcp dst -j DIVERT
+iptables -t mangle -A PREROUTING -p udp -m set --match-set krustacean_udp dst -j TPROXY_MARK
+iptables -t mangle -A PREROUTING -p tcp -m set --match-set krustacean_tcp dst -j TPROXY_MARK
+
+iptables -t mangle -A DIVERT -j MARK --set-xmark 0x3001
+iptables -t mangle -A DIVERT -j ACCEPT
+
+iptables -t mangle -A TPROXY_MARK -p udp -j TPROXY --on-port 8080 --on-ip 127.0.0.2 --tproxy-mark 0x3001
+iptables -t mangle -A TPROXY_MARK -p tcp -j TPROXY --on-port 8080 --on-ip 127.0.0.2 --tproxy-mark 0x3001
