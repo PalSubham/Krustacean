@@ -124,7 +124,7 @@ static CAP_HEADER: LazyLock<__user_cap_header_struct> = LazyLock::new(|| __user_
 fn is_cap_effective(cap: u32) -> IoResult<bool> {
     let mut data = [__user_cap_data_struct::default(), __user_cap_data_struct::default()];
 
-    let ret = unsafe { syscall(SYS_capget, &CAP_HEADER as *const _, &mut data as *mut _) };
+    let ret = unsafe { syscall(SYS_capget, &*CAP_HEADER as *const _, &mut data as *mut _) };
 
     if ret != 0 {
         return Err(Error::last_os_error());
