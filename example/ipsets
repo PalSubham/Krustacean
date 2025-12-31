@@ -1,0 +1,2 @@
+ipset create krustacean_udp bitmap:port range 1-65535
+ipset create krustacean_tcp bitmap:port range 1-65535

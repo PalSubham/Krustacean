@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use core::result::Result;
-use libc::{SYS_capget, c_int, syscall};
+use libc::{SYS_capget, syscall};
 use log::LevelFilter;
 use log4rs::{
     Handle,
@@ -16,13 +16,12 @@ use std::{
     io::{Error, ErrorKind, Result as IoResult},
     os::unix::fs::PermissionsExt,
     path::PathBuf,
-    process,
     sync::LazyLock,
 };
 use tokio::fs::read_to_string;
 
 use super::{
-    bindings::{__user_cap_data_struct, __user_cap_header_struct, _LINUX_CAPABILITY_VERSION_3, CAP_NET_ADMIN, CAP_NET_BIND_SERVICE},
+    bindings::{__user_cap_data_struct, __user_cap_header_struct, CAP_NET_ADMIN, CAP_NET_BIND_SERVICE},
     structs::{Configs, LogError},
 };
 
@@ -115,14 +114,11 @@ pub(crate) fn enable_logging(file_logging: bool) -> Result<Handle, LogError> {
 }
 
 /// Metadata header to fetch process capabilities
-static CAP_HEADER: LazyLock<__user_cap_header_struct> = LazyLock::new(|| __user_cap_header_struct {
-    version: _LINUX_CAPABILITY_VERSION_3,
-    pid: process::id() as c_int,
-});
+static CAP_HEADER: LazyLock<__user_cap_header_struct> = LazyLock::new(|| __user_cap_header_struct::default());
 
 /// Checks if given capability is effective
 fn is_cap_effective(cap: u32) -> IoResult<bool> {
-    let mut data = [__user_cap_data_struct::default(), __user_cap_data_struct::default()];
+    let mut data = <[__user_cap_data_struct; 2] as Default>::default();
 
     let ret = unsafe { syscall(SYS_capget, &*CAP_HEADER as *const _, &mut data as *mut _) };
 

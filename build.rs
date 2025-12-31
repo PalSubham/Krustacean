@@ -15,7 +15,6 @@ fn main() {
         .allowlist_var("CAP_NET_ADMIN")
         .derive_copy(false)
         .derive_debug(false)
-        .derive_default(false)
         .generate()
         .expect("Unable to generate bindings for linux/capability.h");
 
