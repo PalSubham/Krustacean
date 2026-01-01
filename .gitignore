@@ -1,4 +1,5 @@
 /target
 /.cargo
 /extern
+/vendor
 Cargo.lock

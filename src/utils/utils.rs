@@ -114,7 +114,7 @@ pub(crate) fn enable_logging(file_logging: bool) -> Result<Handle, LogError> {
 }
 
 /// Metadata header to fetch process capabilities
-static CAP_HEADER: LazyLock<__user_cap_header_struct> = LazyLock::new(|| __user_cap_header_struct::default());
+static CAP_HEADER: LazyLock<__user_cap_header_struct> = LazyLock::new(__user_cap_header_struct::default);
 
 /// Checks if given capability is effective
 fn is_cap_effective(cap: u32) -> IoResult<bool> {
@@ -137,7 +137,7 @@ fn is_cap_effective(cap: u32) -> IoResult<bool> {
 macro_rules! banner {
     ($file:literal) => {{
         let banner = ::const_format::str_replace!(::core::include_str!($file), "@project_version@", ::core::env!("CARGO_PKG_VERSION"));
-        ::log::info!("{}", banner);
+        ::log::info!("{banner}");
     }};
 }
 
