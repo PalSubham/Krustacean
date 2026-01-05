@@ -54,15 +54,12 @@ pub(crate) async fn read_config(path: &PathBuf) -> IoResult<Configs> {
 }
 
 const LOG_FILE_NAME: &str = "Krustacean.log";
-const LOG_DIR: &str = "/var/log/Krustacean";
 
 /// Enable logging based on configuration
 #[inline(always)]
-pub(crate) fn enable_logging(file_logging: bool) -> Result<Handle, LogError> {
-    let config = match file_logging {
-        true => {
-            let dir = PathBuf::from(LOG_DIR);
-
+pub(crate) fn enable_logging(log_dir: Option<&PathBuf>) -> Result<Handle, LogError> {
+    let config = match log_dir {
+        Some(dir) => {
             if !dir.exists() {
                 return Err(LogError::cause("Log directory not found"));
             } else if !dir.is_dir() {
@@ -91,8 +88,7 @@ pub(crate) fn enable_logging(file_logging: bool) -> Result<Handle, LogError> {
                 .build(Root::builder().appender("file").build(LevelFilter::max()))
                 .map_err(|_| LogError::cause("Failed to create FileAppender log config"))?
         },
-
-        false => {
+        None => {
             let console = ConsoleAppender::builder().build();
 
             Config::builder()

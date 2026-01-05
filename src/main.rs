@@ -58,7 +58,7 @@ async fn main() -> ExitCode {
         },
     };
 
-    let _handle = match enable_logging(args.filelog) {
+    let _handle = match enable_logging(args.logdir.as_ref()) {
         Ok(handle) => handle,
         Err(e) => {
             eprintln!("{e}");

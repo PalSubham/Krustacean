@@ -29,8 +29,8 @@ impl Error for LogError {}
 
 /// Env variable arguments structure
 pub(crate) struct Args {
-    pub(crate) filelog: bool,
     pub(crate) config: PathBuf,
+    pub(crate) logdir: Option<PathBuf>,
 }
 
 impl Args {
@@ -41,13 +41,13 @@ impl Args {
             Err(VarError::NotUnicode(_)) => return Err("Non-unicode env variable \"CONFIG_FILE\"".into()),
         };
 
-        let filelog = match env::var("FILE_LOG") {
-            Ok(_) => true,
-            Err(VarError::NotPresent) => false,
-            Err(VarError::NotUnicode(_)) => return Err("Non-unicode env variable \"FILE_LOG\"".into()),
+        let logdir = match env::var("LOGS_DIRECTORY") {
+            Ok(l) => Some(PathBuf::from(l)),
+            Err(VarError::NotPresent) => None,
+            Err(VarError::NotUnicode(_)) => return Err("Non-unicode env variable \"LOGS_DIRECTORY\"".into()),
         };
 
-        Ok(Self { filelog, config })
+        Ok(Self { config, logdir })
     }
 }
 
