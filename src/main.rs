@@ -10,8 +10,8 @@
 
 use log::{error, info, warn};
 use sd_notify::NotifyState;
-use std::{collections::HashMap, net::Ipv4Addr, process::ExitCode, str::FromStr, sync::Arc};
-use tokio::{sync::Notify, task::JoinSet};
+use std::{process::ExitCode, sync::Arc};
+use tokio::{sync::{RwLock, watch}, task::JoinSet};
 
 mod handlers;
 mod utils;
@@ -19,10 +19,10 @@ mod utils;
 use crate::{
     handlers::{
         forwarders::{tcp_forwarder, udp_forwarder},
-        shutdown_handler::shutdown_handler,
+        signal_handler::signal_handler,
     },
     utils::{
-        structs::Args,
+        structs::{Actions, Args},
         utils::{banner, enable_logging, is_capable, read_config},
     },
 };
@@ -51,7 +51,7 @@ async fn main() -> ExitCode {
     };
 
     let configs = match read_config(&args.config).await {
-        Ok(c) => c,
+        Ok(c) => Arc::new(RwLock::new(c)),
         Err(e) => {
             eprintln!("{e}");
             return ExitCode::FAILURE;
@@ -70,7 +70,7 @@ async fn main() -> ExitCode {
 
     info!("Application starting...");
 
-    let udp_map = match configs
+    /*let udp_map = match configs
         .udp
         .into_iter()
         .map(|u| match Ipv4Addr::from_str(&u.upstream_ip) {
@@ -100,43 +100,45 @@ async fn main() -> ExitCode {
     {
         Ok(map) => Arc::new(map),
         Err(_) => return ExitCode::FAILURE,
-    };
+    };*/
 
-    let shutdown = Arc::new(Notify::new());
+    let (tx, _) = {
+        let cfg = configs.read().await;
+        watch::channel(Actions::INIT(cfg.clone()))
+    };
     let mut tasks = JoinSet::new();
 
     {
-        let shutdown = shutdown.clone();
-        let udp_map = udp_map.clone();
+        let rx = tx.subscribe();
         let label = "UDP forwarder";
 
-        tasks.spawn(async move {
+        /*tasks.spawn(async move {
             match udp_forwarder(udp_map, configs.port, shutdown).await {
                 Ok(_) => Ok(((), label)),
                 Err(e) => Err((e, label)),
             }
-        });
+        });*/
     }
 
     {
-        let shutdown = shutdown.clone();
-        let tcp_map = tcp_map.clone();
+        let rx = tx.subscribe();
         let label = "TCP forwarder";
 
-        tasks.spawn(async move {
+        /*tasks.spawn(async move {
             match tcp_forwarder(tcp_map, configs.port, shutdown).await {
                 Ok(_) => Ok(((), label)),
                 Err(e) => Err((e, label)),
             }
-        });
+        });*/
     }
 
     {
-        let shutdown = shutdown.clone();
+        let tx = tx.clone();
+        let configs = configs.clone();
         let label = "Shutdown handler";
 
         tasks.spawn(async move {
-            match shutdown_handler(shutdown.clone()).await {
+            match signal_handler(tx, &args.config, configs).await {
                 Ok(_) => Ok(((), label)),
                 Err(e) => Err((e, label)),
             }

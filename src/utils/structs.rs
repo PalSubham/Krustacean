@@ -3,8 +3,7 @@
 use core::{error::Error, fmt};
 use serde::Deserialize;
 use std::{
-    env::{self, VarError},
-    path::PathBuf,
+    collections::HashSet, env::{self, VarError}, net::Ipv4Addr, path::PathBuf
 };
 
 /// Logging error structure
@@ -52,17 +51,25 @@ impl Args {
 }
 
 /// Application configuration structure
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Eq, PartialEq)]
 pub(crate) struct Configs {
     pub(crate) port: u16,
-    pub(crate) udp: Vec<Forwarders>,
-    pub(crate) tcp: Vec<Forwarders>,
+    pub(crate) udp: HashSet<Forwarders>,
+    pub(crate) tcp: HashSet<Forwarders>,
 }
 
 /// Forwarder configuration structure
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Eq, PartialEq, Hash)]
 pub(crate) struct Forwarders {
-    pub(crate) upstream_ip: String,
+    pub(crate) upstream_ip: Ipv4Addr,
     pub(crate) upstream_port: u16,
     pub(crate) orig_port: u16,
+}
+
+#[derive(Clone)]
+pub(crate) enum Actions {
+    INIT (Configs),
+    RELOAD (Configs),
+    KILL,
+    SHUTDOWN
 }
