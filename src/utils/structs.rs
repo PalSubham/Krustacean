@@ -3,7 +3,7 @@
 use core::{error::Error, fmt};
 use serde::Deserialize;
 use std::{
-    collections::HashSet, env::{self, VarError}, net::Ipv4Addr, path::PathBuf
+    collections::{HashMap, HashSet}, env::{self, VarError}, net::Ipv4Addr, path::PathBuf
 };
 
 /// Logging error structure
@@ -64,6 +64,43 @@ pub(crate) struct Forwarders {
     pub(crate) upstream_ip: Ipv4Addr,
     pub(crate) upstream_port: u16,
     pub(crate) orig_port: u16,
+}
+
+impl Configs {
+    pub(crate) fn tcp_config(&self) -> TcpMap {
+        TcpMap(self
+            .tcp
+            .iter()
+            .map(|u| (u.orig_port, (u.upstream_ip, u.upstream_port)))
+            .collect())
+    }
+
+    pub(crate) fn udp_config(&self) -> UdpMap {
+        UdpMap(self
+            .udp
+            .iter()
+            .map(|u| (u.orig_port, (u.upstream_ip, u.upstream_port)))
+            .collect())
+    }
+}
+
+pub(crate) trait ForwarderMap {
+    fn get(&self, k: &u16) -> Option<&(Ipv4Addr, u16)>;
+}
+
+pub(crate) struct TcpMap(HashMap<u16, (Ipv4Addr, u16)>);
+pub(crate) struct UdpMap(HashMap<u16, (Ipv4Addr, u16)>);
+
+impl ForwarderMap for TcpMap {
+    fn get(&self, k: &u16) -> Option<&(Ipv4Addr, u16)> {
+        self.0.get(k)
+    }
+}
+
+impl ForwarderMap for UdpMap {
+    fn get(&self, k: &u16) -> Option<&(Ipv4Addr, u16)> {
+        self.0.get(k)
+    }
 }
 
 #[derive(Clone)]

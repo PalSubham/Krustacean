@@ -102,35 +102,11 @@ async fn main() -> ExitCode {
         Err(_) => return ExitCode::FAILURE,
     };*/
 
-    let (tx, _) = {
+    let (tx, rx) = {
         let cfg = configs.read().await;
         watch::channel(Actions::INIT(cfg.clone()))
     };
     let mut tasks = JoinSet::new();
-
-    {
-        let rx = tx.subscribe();
-        let label = "UDP forwarder";
-
-        /*tasks.spawn(async move {
-            match udp_forwarder(udp_map, configs.port, shutdown).await {
-                Ok(_) => Ok(((), label)),
-                Err(e) => Err((e, label)),
-            }
-        });*/
-    }
-
-    {
-        let rx = tx.subscribe();
-        let label = "TCP forwarder";
-
-        /*tasks.spawn(async move {
-            match tcp_forwarder(tcp_map, configs.port, shutdown).await {
-                Ok(_) => Ok(((), label)),
-                Err(e) => Err((e, label)),
-            }
-        });*/
-    }
 
     {
         let tx = tx.clone();
@@ -139,6 +115,30 @@ async fn main() -> ExitCode {
 
         tasks.spawn(async move {
             match signal_handler(tx, &args.config, configs).await {
+                Ok(_) => Ok(((), label)),
+                Err(e) => Err((e, label)),
+            }
+        });
+    }
+
+    {
+        let rx = rx.clone();
+        let label = "UDP forwarder";
+
+        tasks.spawn(async move {
+            match udp_forwarder(rx).await {
+                Ok(_) => Ok(((), label)),
+                Err(e) => Err((e, label)),
+            }
+        });
+    }
+
+    {
+        let rx = rx.clone();
+        let label = "TCP forwarder";
+
+        tasks.spawn(async move {
+            match tcp_forwarder(rx).await {
                 Ok(_) => Ok(((), label)),
                 Err(e) => Err((e, label)),
             }

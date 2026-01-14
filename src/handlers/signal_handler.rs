@@ -17,7 +17,7 @@ pub(crate) async fn signal_handler(tx: Sender<Actions>, config_path: &PathBuf, c
         },
         Err(e) => {
             error!("Failed to set up SIGINT handler: {}", e);
-            tx.send_replace(Actions::KILL);
+            tx.send_replace(Actions::SHUTDOWN);
             return Err(Error::new(ErrorKind::Other, "SIGINT handling failure"));
         },
     };
@@ -29,7 +29,7 @@ pub(crate) async fn signal_handler(tx: Sender<Actions>, config_path: &PathBuf, c
         },
         Err(e) => {
             error!("Failed to set up SIGTERM handler: {}", e);
-            tx.send_replace(Actions::KILL);
+            tx.send_replace(Actions::SHUTDOWN);
             return Err(Error::new(ErrorKind::Other, "SIGTERM handling failure"));
         },
     };
@@ -41,7 +41,7 @@ pub(crate) async fn signal_handler(tx: Sender<Actions>, config_path: &PathBuf, c
         },
         Err(e) => {
             error!("Failed to set up SIGQUIT handler: {}", e);
-            tx.send_replace(Actions::KILL);
+            tx.send_replace(Actions::SHUTDOWN);
             return Err(Error::new(ErrorKind::Other, "SIGQUIT handling failure"));
         },
     };
@@ -53,7 +53,7 @@ pub(crate) async fn signal_handler(tx: Sender<Actions>, config_path: &PathBuf, c
         },
         Err(e) => {
             error!("Failed to set up SIGHUP handler: {}", e);
-            tx.send_replace(Actions::KILL);
+            tx.send_replace(Actions::SHUTDOWN);
             return Err(Error::new(ErrorKind::Other, "SIGHUP handling failure"));
         },
     };
@@ -67,16 +67,19 @@ pub(crate) async fn signal_handler(tx: Sender<Actions>, config_path: &PathBuf, c
                 tx.send_replace(Actions::KILL);
                 break 'signal_handler_loop;
             },
+
             _ = sigint.recv() => {
                 info!("Received SIGINT");
                 tx.send_replace(Actions::SHUTDOWN);
                 break 'signal_handler_loop;
             },
+
             _ = sigterm.recv() => {
                 info!("Received SIGTERM");
                 tx.send_replace(Actions::SHUTDOWN);
                 break 'signal_handler_loop;
             },
+            
             _ = sighup.recv() => {
                 info!("Received SIGHUP");
 
@@ -88,8 +91,9 @@ pub(crate) async fn signal_handler(tx: Sender<Actions>, config_path: &PathBuf, c
                         };
 
                         if needs_update {
-                            let mut cfg = current_config.write().await;
                             tx.send_replace(Actions::RELOAD(new_config.clone()));
+                            
+                            let mut cfg = current_config.write().await;
                             *cfg = new_config;
                         }
                     },
