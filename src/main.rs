@@ -8,10 +8,11 @@
  * (at your option) any later version.
  */
 
+use arc_swap::ArcSwap;
 use log::{error, info, warn};
 use sd_notify::NotifyState;
 use std::{process::{id as pid, ExitCode}, sync::Arc};
-use tokio::{sync::{RwLock, watch}, task::JoinSet};
+use tokio::{sync::watch, task::JoinSet};
 
 mod handlers;
 mod utils;
@@ -22,7 +23,7 @@ use crate::{
         signal_handler::signal_handler,
     },
     utils::{
-        structs::{Actions, Args},
+        structs::{Actions, Args, RuntimeConfigs},
         utils::{banner, enable_logging, is_capable, read_config},
     },
 };
@@ -50,14 +51,6 @@ async fn main() -> ExitCode {
         },
     };
 
-    let configs = match read_config(&args.config).await {
-        Ok(c) => Arc::new(RwLock::new(c)),
-        Err(e) => {
-            eprintln!("{e}");
-            return ExitCode::FAILURE;
-        },
-    };
-
     let _handle = match enable_logging(args.logdir.as_ref()) {
         Ok(handle) => handle,
         Err(e) => {
@@ -70,10 +63,15 @@ async fn main() -> ExitCode {
 
     info!("Application starting (PID: {})...", pid());
 
-    let (tx, rx) = {
-        let cfg = configs.read().await;
-        watch::channel(Actions::INIT(cfg.clone()))
+    let configs = match read_config(&args.config).await {
+        Ok(c) => Arc::new(ArcSwap::from_pointee(RuntimeConfigs::from(&c))),
+        Err(e) => {
+            error!("{e}");
+            return ExitCode::FAILURE;
+        },
     };
+
+    let (tx, rx) = watch::channel(Actions::INIT);
     let mut tasks = JoinSet::new();
 
     {
@@ -92,10 +90,11 @@ async fn main() -> ExitCode {
 
     {
         let rx = rx.clone();
+        let configs = configs.clone();
         let label = "UDP forwarder";
 
         tasks.spawn(async move {
-            match udp_forwarder(rx).await {
+            match udp_forwarder(rx, configs).await {
                 Ok(_) => Ok(((), label)),
                 Err(e) => Err((e, label)),
             }
@@ -104,10 +103,11 @@ async fn main() -> ExitCode {
 
     {
         let rx = rx.clone();
+        let configs = configs.clone();
         let label = "TCP forwarder";
 
         tasks.spawn(async move {
-            match tcp_forwarder(rx).await {
+            match tcp_forwarder(rx, configs).await {
                 Ok(_) => Ok(((), label)),
                 Err(e) => Err((e, label)),
             }
@@ -127,7 +127,7 @@ async fn main() -> ExitCode {
             Ok(Err((e, l))) => {
                 if !stopping {
                     stopping = true;
-                    tx.send_replace(Actions::STOP(l.into()));
+                    tx.send_replace(Actions::STOP(l));
                 }
 
                 error!("{l} - error: {e}");

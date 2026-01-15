@@ -3,7 +3,7 @@
 use core::{error::Error, fmt};
 use serde::Deserialize;
 use std::{
-    collections::{HashMap, HashSet}, env::{self, VarError}, net::Ipv4Addr, path::PathBuf
+    collections::{HashMap, HashSet}, env::{self, VarError}, net::Ipv4Addr, path::PathBuf, sync::Arc
 };
 
 /// Logging error structure
@@ -51,36 +51,47 @@ impl Args {
 }
 
 /// Application configuration structure
-#[derive(Debug, Deserialize, Clone, Eq, PartialEq)]
+#[derive(Deserialize, Clone, Eq, PartialEq)]
 pub(crate) struct Configs {
-    pub(crate) port: u16,
-    pub(crate) udp: HashSet<Forwarders>,
-    pub(crate) tcp: HashSet<Forwarders>,
+    pub(super) port: u16,
+    pub(super) udp: HashSet<Forwarders>,
+    pub(super) tcp: HashSet<Forwarders>,
 }
 
 /// Forwarder configuration structure
-#[derive(Debug, Deserialize, Clone, Eq, PartialEq, Hash)]
-pub(crate) struct Forwarders {
-    pub(crate) upstream_ip: Ipv4Addr,
-    pub(crate) upstream_port: u16,
-    pub(crate) orig_port: u16,
+#[derive(Deserialize, Clone, Eq, PartialEq, Hash)]
+pub(super) struct Forwarders {
+    pub(super) upstream_ip: Ipv4Addr,
+    pub(super) upstream_port: u16,
+    pub(super) orig_port: u16,
 }
 
-impl Configs {
-    pub(crate) fn tcp_config(&self) -> TcpMap {
-        TcpMap(self
-            .tcp
-            .iter()
-            .map(|u| (u.orig_port, (u.upstream_ip, u.upstream_port)))
-            .collect())
-    }
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct RuntimeConfigs {
+    pub(crate) port: u16,
+    pub(crate) udp_map: Arc<UdpMap>,
+    pub(crate) tcp_map: Arc<TcpMap>,
+}
 
-    pub(crate) fn udp_config(&self) -> UdpMap {
-        UdpMap(self
-            .udp
-            .iter()
-            .map(|u| (u.orig_port, (u.upstream_ip, u.upstream_port)))
-            .collect())
+impl From<&Configs> for RuntimeConfigs {
+    fn from(cfg: &Configs) -> Self {
+        Self {
+            port: cfg.port,
+            udp_map: Arc::new(UdpMap(
+                cfg
+                    .udp
+                    .iter()
+                    .map(|u| (u.orig_port, (u.upstream_ip, u.upstream_port)))
+                    .collect()
+                )),
+            tcp_map: Arc::new(TcpMap(
+                cfg
+                    .tcp
+                    .iter()
+                    .map(|u| (u.orig_port, (u.upstream_ip, u.upstream_port)))
+                    .collect()
+                ))
+        }
     }
 }
 
@@ -88,7 +99,10 @@ pub(crate) trait ForwarderMap {
     fn get(&self, k: &u16) -> Option<&(Ipv4Addr, u16)>;
 }
 
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct TcpMap(HashMap<u16, (Ipv4Addr, u16)>);
+
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct UdpMap(HashMap<u16, (Ipv4Addr, u16)>);
 
 impl ForwarderMap for TcpMap {
@@ -105,10 +119,10 @@ impl ForwarderMap for UdpMap {
 
 #[derive(Clone)]
 pub(crate) enum Actions {
-    INIT(Configs),
-    RELOAD(Configs),
+    INIT,
+    RELOAD(bool),
     KILL,
     SHUTDOWN,
-    STOP(String),
+    STOP(&'static str),
     PANICKED
 }

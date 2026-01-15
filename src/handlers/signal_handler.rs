@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use arc_swap::ArcSwap;
 use log::{error, info};
 use std::{io::{Error, ErrorKind, Result}, path::PathBuf, sync::Arc};
-use tokio::{select, signal::unix::{SignalKind, signal}, sync::{RwLock, watch::{Receiver, Sender}}};
+use tokio::{select, signal::unix::{SignalKind, signal}, sync::watch::{Receiver, Sender}};
 
-use crate::utils::{structs::{Actions, Configs}, utils::read_config};
+use crate::utils::{structs::{Actions, RuntimeConfigs}, utils::read_config};
 
 /// Handles signals (SIGINT, SIGTERM, SIGQUIT & SIGHUP)
-pub(crate) async fn signal_handler(tx: Sender<Actions>, mut rx: Receiver<Actions>, config_path: &PathBuf, current_config: Arc<RwLock<Configs>>) -> Result<()> {
+pub(crate) async fn signal_handler(tx: Sender<Actions>, mut rx: Receiver<Actions>, config_path: &PathBuf, current_config: Arc<ArcSwap<RuntimeConfigs>>) -> Result<()> {
     info!("Signal handler starting...");
 
     let action = rx.borrow().clone();
@@ -105,17 +106,17 @@ pub(crate) async fn signal_handler(tx: Sender<Actions>, mut rx: Receiver<Actions
                 info!("Received SIGHUP");
 
                 match read_config(config_path).await {
-                    Ok(new_config) => {
-                        let needs_update = {
-                            let cfg = current_config.read().await;
-                            *cfg != new_config
+                    Ok(new_file_config) => {
+                        let new_config = RuntimeConfigs::from(&new_file_config);
+
+                        let (needs_update, port_changed) = {
+                            let old_cfg = current_config.load();
+                            (**old_cfg != new_config, old_cfg.port != new_config.port)
                         };
 
                         if needs_update {
-                            tx.send_replace(Actions::RELOAD(new_config.clone()));
-                            
-                            let mut cfg = current_config.write().await;
-                            *cfg = new_config;
+                            current_config.store(Arc::new(new_config));
+                            tx.send_replace(Actions::RELOAD(port_changed));
                         }
                     },
                     Err(e) => error!("{e}")

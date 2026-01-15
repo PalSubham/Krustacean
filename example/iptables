@@ -1,0 +1,23 @@
+=============== IPTABLES MANGLE =================================================================================
+
+iptables -t mangle -N DIVERT
+iptables -t mangle -A DIVERT -j MARK --set-xmark 0x3001
+iptables -t mangle -A DIVERT -j ACCEPT
+
+iptables -t mangle -A PREROUTING -p tcp -m socket --transparent -m set --match-set krustacean_tcp dst -j DIVERT
+iptables -t mangle -A PREROUTING -p udp -m set --match-set krustacean_udp dst -j TPROXY --on-port 8080 --on-ip 127.0.0.2 --tproxy-mark 0x3001
+iptables -t mangle -A PREROUTING -p tcp -m set --match-set krustacean_tcp dst -j TPROXY --on-port 8080 --on-ip 127.0.0.2 --tproxy-mark 0x3001
+
+=============== IPTABLES FILTER =================================================================================
+
+iptables -A INPUT -m mark --mark 0x3001 -j ACCEPT
+
+=============== IPSET ===========================================================================================
+
+ipset create krustacean_udp bitmap:port range 1-65535
+ipset create krustacean_tcp bitmap:port range 1-65535
+
+ipset add krustacean_udp 53
+ipset add krustacean_udp 123
+ipset add krustacean_tcp 53
+ipset add krustacean_tcp 80

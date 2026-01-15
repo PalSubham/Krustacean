@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use core::convert::Into;
+use arc_swap::ArcSwap;
 use log::{error, info, warn};
 use socket2::{Domain, Protocol, SockRef, Socket, Type};
 use std::{
@@ -12,12 +13,12 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpStream, UdpSocket},
     select,
-    sync::{RwLock, Semaphore, TryAcquireError, watch::Receiver},
+    sync::{Semaphore, TryAcquireError, watch::Receiver},
     task::JoinSet,
     time::{Duration, timeout},
 };
 
-use crate::utils::structs::{Actions, ForwarderMap};
+use crate::utils::structs::{Actions, ForwarderMap, RuntimeConfigs};
 
 use super::helpers::{recvfrom_cmsg_async, CONN_BACKLOG, DRAIN_DURATION, create_tcp_listener, create_udp_socket_fd};
 
@@ -25,14 +26,11 @@ const CONN_TIMEOUT: Duration = Duration::from_secs(2u64);
 const BUFFER_SIZE: usize = 4096;
 
 /// UDP forwarder function
-pub(crate) async fn udp_forwarder(mut rx: Receiver<Actions>) -> Result<()> {
+pub(crate) async fn udp_forwarder(mut rx: Receiver<Actions>, current_config: Arc<ArcSwap<RuntimeConfigs>>) -> Result<()> {
     info!("UDP forwarder starting...");
 
     let action = rx.borrow().clone();
-    let (udp_map, mut port, mut udp_fd) = match action {
-        Actions::INIT(c) | Actions::RELOAD(c) => {
-            (Arc::new(RwLock::new(c.udp_config())), c.port, create_udp_socket_fd(c.port)?)
-        },
+    match action {
         Actions::STOP(s) => {
             info!("UDP forwarder shut down before starting as {s} failed");
             return Ok(());
@@ -44,9 +42,12 @@ pub(crate) async fn udp_forwarder(mut rx: Receiver<Actions>) -> Result<()> {
         Actions::KILL | Actions::SHUTDOWN => {
             info!("TCP forwarder shut down before starting");
             return Ok(());
-        }
+        },
+        _ => {/* RELOAD or INIT has no effect now */}
     };
 
+    let mut config = current_config.load();
+    let mut udp_fd = create_udp_socket_fd(config.port)?;
     let semaphore = Arc::new(Semaphore::new(CONN_BACKLOG as usize));
     let mut tasks = JoinSet::new();
     let mut force_kill = false;
@@ -59,23 +60,18 @@ pub(crate) async fn udp_forwarder(mut rx: Receiver<Actions>) -> Result<()> {
                     Ok(_) => {
                         let action = rx.borrow().clone();
                         match action {
-                            Actions::RELOAD(c) => {
+                            Actions::RELOAD(pc) => {
                                 info!("RELOAD signal received by UDP forwarder...");
 
-                                let mut map = udp_map.write().await;
-                                *map = c.udp_config();
-                                
-                                if c.port != port {
-                                    match create_udp_socket_fd(c.port) {
-                                        Ok(f) => {
-                                            udp_fd = f;
-                                            port = c.port;
-                                        },
+                                config = current_config.load();
+                                if pc {
+                                    match create_udp_socket_fd(config.port) {
+                                        Ok(f) => udp_fd = f,
                                         Err(e) => {
                                             error!("{e}");
                                             continue 'udp_forwarder_loop;
                                         }
-                                    }
+                                    };
                                 }
                             },
                             Actions::STOP(s) => {
@@ -96,7 +92,7 @@ pub(crate) async fn udp_forwarder(mut rx: Receiver<Actions>) -> Result<()> {
                                 info!("SHUTDOWN signal received...Shutting down UDP forwarder...");
                                 break 'udp_forwarder_loop;
                             },
-                            Actions::INIT(_) => {/* INIT will not come here */}
+                            Actions::INIT => {/* INIT will not come here */}
                         }
                     },
                     Err(_) => {
@@ -123,7 +119,7 @@ pub(crate) async fn udp_forwarder(mut rx: Receiver<Actions>) -> Result<()> {
                     match semaphore.clone().try_acquire_owned() {
                         Ok(p) => {
                             let packet = buf[..len].to_vec();
-                            let udp_map = udp_map.clone();
+                            let udp_map = config.udp_map.clone();
 
                             tasks.spawn(async move {
                                 let _permit = p; // hold acquired permit
@@ -132,12 +128,7 @@ pub(crate) async fn udp_forwarder(mut rx: Receiver<Actions>) -> Result<()> {
                                 let orig_dst_port = orig_dst.port();
                                 info!("UDP intercepted for {orig_dst_addr}:{orig_dst_port} from {src}");
 
-                                let proxy = {
-                                    let map = udp_map.read().await;
-                                    map.get(&orig_dst_port).cloned()
-                                };
-
-                                match proxy {
+                                match udp_map.get(&orig_dst_port) {
                                     Some(proxy) => {
                                         match UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0u16)).await {
                                             Ok(upstream_socket) => {
@@ -261,14 +252,11 @@ pub(crate) async fn udp_forwarder(mut rx: Receiver<Actions>) -> Result<()> {
 }
 
 /// TCP forwarder function
-pub(crate) async fn tcp_forwarder(mut rx: Receiver<Actions>) -> Result<()> {
+pub(crate) async fn tcp_forwarder(mut rx: Receiver<Actions>, current_config: Arc<ArcSwap<RuntimeConfigs>>) -> Result<()> {
     info!("TCP forwarder starting...");
 
     let action = rx.borrow().clone();
-    let (tcp_map, mut port, mut listener) = match action {
-        Actions::INIT(c) | Actions::RELOAD(c) => {
-            (Arc::new(RwLock::new(c.tcp_config())), c.port, create_tcp_listener(c.port)?)
-        },
+    match action {
         Actions::STOP(s) => {
             info!("TCP forwarder shut down before starting as {s} failed");
             return Ok(());
@@ -280,9 +268,12 @@ pub(crate) async fn tcp_forwarder(mut rx: Receiver<Actions>) -> Result<()> {
         Actions::KILL | Actions::SHUTDOWN => {
             info!("TCP forwarder shut down before starting");
             return Ok(());
-        }
+        },
+        _ => {/* RELOAD or INIT has no effect now */}
     };
 
+    let mut config = current_config.load();
+    let mut listener = create_tcp_listener(config.port)?;
     let mut tasks = JoinSet::new();
     let mut force_kill = false;
 
@@ -293,23 +284,18 @@ pub(crate) async fn tcp_forwarder(mut rx: Receiver<Actions>) -> Result<()> {
                     Ok(_) => {
                         let action = rx.borrow().clone();
                         match action {
-                            Actions::RELOAD(c) => {
-                                info!("RELOAD signal received by UDP forwarder...");
+                            Actions::RELOAD(pc) => {
+                                info!("RELOAD signal received by TCP forwarder...");
 
-                                let mut map = tcp_map.write().await;
-                                *map = c.tcp_config();
-                                
-                                if c.port != port {
-                                    match create_tcp_listener(c.port) {
-                                        Ok(l) => {
-                                            listener = l;
-                                            port = c.port;
-                                        },
+                                config = current_config.load();
+                                if pc {
+                                    match create_tcp_listener(config.port) {
+                                        Ok(l) => listener = l,
                                         Err(e) => {
                                             error!("{e}");
                                             continue 'tcp_forwarder_loop;
                                         }
-                                    }
+                                    };
                                 }
                             },
                             Actions::STOP(s) => {
@@ -330,7 +316,7 @@ pub(crate) async fn tcp_forwarder(mut rx: Receiver<Actions>) -> Result<()> {
                                 info!("SHUTDOWN signal received...Shutting down TCP forwarder...");
                                 break 'tcp_forwarder_loop;
                             },
-                            Actions::INIT(_) => {/* INIT will not come here */}
+                            _ => {/* INIT will not come here */}
                         }
                     },
                     Err(_) => {
@@ -343,7 +329,7 @@ pub(crate) async fn tcp_forwarder(mut rx: Receiver<Actions>) -> Result<()> {
             result = listener.accept() => {
                 match result {
                     Ok((mut client, src)) => {
-                        let tcp_map = tcp_map.clone();
+                        let tcp_map = config.tcp_map.clone();
 
                         tasks.spawn(async move {
                             let orig_dst = SockRef::from(&client).original_dst_v4().map(|o| o.as_socket_ipv4());
@@ -354,12 +340,7 @@ pub(crate) async fn tcp_forwarder(mut rx: Receiver<Actions>) -> Result<()> {
                                     let orig_dst_port = orig.port();
                                     info!("TCP intercepted for {}:{} from {}", orig_dst_addr, orig_dst_port, src);
 
-                                    let proxy = {
-                                        let map = tcp_map.read().await;
-                                        map.get(&orig_dst_port).cloned()
-                                    };
-
-                                    match proxy {
+                                    match tcp_map.get(&orig_dst_port) {
                                         Some(proxy) => {
                                             match timeout(CONN_TIMEOUT, TcpStream::connect(proxy)).await {
                                                 Ok(Ok(mut upstream_conn)) => {
