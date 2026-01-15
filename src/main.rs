@@ -11,7 +11,10 @@
 use arc_swap::ArcSwap;
 use log::{error, info, warn};
 use sd_notify::NotifyState;
-use std::{process::{id as pid, ExitCode}, sync::Arc};
+use std::{
+    process::{ExitCode, id as pid},
+    sync::Arc,
+};
 use tokio::{sync::watch, task::JoinSet};
 
 mod handlers;

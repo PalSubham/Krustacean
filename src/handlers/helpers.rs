@@ -12,7 +12,8 @@ use std::{
     io::{Error, IoSliceMut, Result},
     mem::size_of,
     net::{Ipv4Addr, SocketAddrV4},
-    os::fd::AsRawFd, time::Duration,
+    os::fd::AsRawFd,
+    time::Duration,
 };
 use tokio::{io::unix::AsyncFd, net::TcpListener};
 

@@ -3,7 +3,11 @@
 use core::{error::Error, fmt};
 use serde::Deserialize;
 use std::{
-    collections::{HashMap, HashSet}, env::{self, VarError}, net::Ipv4Addr, path::PathBuf, sync::Arc
+    collections::{HashMap, HashSet},
+    env::{self, VarError},
+    net::Ipv4Addr,
+    path::PathBuf,
+    sync::Arc,
 };
 
 /// Logging error structure
@@ -78,19 +82,17 @@ impl From<&Configs> for RuntimeConfigs {
         Self {
             port: cfg.port,
             udp_map: Arc::new(UdpMap(
-                cfg
-                    .udp
+                cfg.udp
                     .iter()
                     .map(|u| (u.orig_port, (u.upstream_ip, u.upstream_port)))
-                    .collect()
-                )),
+                    .collect(),
+            )),
             tcp_map: Arc::new(TcpMap(
-                cfg
-                    .tcp
+                cfg.tcp
                     .iter()
                     .map(|u| (u.orig_port, (u.upstream_ip, u.upstream_port)))
-                    .collect()
-                ))
+                    .collect(),
+            )),
         }
     }
 }
@@ -124,5 +126,5 @@ pub(crate) enum Actions {
     KILL,
     SHUTDOWN,
     STOP(&'static str),
-    PANICKED
+    PANICKED,
 }

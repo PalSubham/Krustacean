@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use core::convert::Into;
 use arc_swap::ArcSwap;
+use core::convert::Into;
 use log::{error, info, warn};
 use socket2::{Domain, Protocol, SockRef, Socket, Type};
 use std::{
@@ -20,7 +20,7 @@ use tokio::{
 
 use crate::utils::structs::{Actions, ForwarderMap, RuntimeConfigs};
 
-use super::helpers::{recvfrom_cmsg_async, CONN_BACKLOG, DRAIN_DURATION, create_tcp_listener, create_udp_socket_fd};
+use super::helpers::{CONN_BACKLOG, DRAIN_DURATION, create_tcp_listener, create_udp_socket_fd, recvfrom_cmsg_async};
 
 const CONN_TIMEOUT: Duration = Duration::from_secs(2u64);
 const BUFFER_SIZE: usize = 4096;
@@ -43,7 +43,7 @@ pub(crate) async fn udp_forwarder(mut rx: Receiver<Actions>, current_config: Arc
             info!("TCP forwarder shut down before starting");
             return Ok(());
         },
-        _ => {/* RELOAD or INIT has no effect now */}
+        _ => { /* RELOAD or INIT has no effect now */ },
     };
 
     let mut config = current_config.load();
@@ -239,9 +239,7 @@ pub(crate) async fn udp_forwarder(mut rx: Receiver<Actions>, current_config: Arc
 
     info!("UDP forwarder is waiting for tasks to finish...");
 
-    let drain = async {
-        (!tasks.is_empty()).then(async || while tasks.join_next().await.is_some() {})
-    };
+    let drain = async { (!tasks.is_empty()).then(async || while tasks.join_next().await.is_some() {}) };
 
     if timeout(DRAIN_DURATION, drain).await.is_err() {
         warn!("Forced exit in UDP forwarder: tasks didn't complete in time");
@@ -269,7 +267,7 @@ pub(crate) async fn tcp_forwarder(mut rx: Receiver<Actions>, current_config: Arc
             info!("TCP forwarder shut down before starting");
             return Ok(());
         },
-        _ => {/* RELOAD or INIT has no effect now */}
+        _ => { /* RELOAD or INIT has no effect now */ },
     };
 
     let mut config = current_config.load();
@@ -413,9 +411,7 @@ pub(crate) async fn tcp_forwarder(mut rx: Receiver<Actions>, current_config: Arc
 
     info!("TCP forwarder is waiting for tasks to finish...");
 
-    let drain = async {
-        (!tasks.is_empty()).then(async || while tasks.join_next().await.is_some() {})
-    };
+    let drain = async { (!tasks.is_empty()).then(async || while tasks.join_next().await.is_some() {}) };
 
     if timeout(DRAIN_DURATION, drain).await.is_err() {
         warn!("Forced exit in TCP forwarder: tasks didn't complete in time");

@@ -2,13 +2,26 @@
 
 use arc_swap::ArcSwap;
 use log::{error, info};
-use std::{io::{Error, ErrorKind, Result}, path::PathBuf, sync::Arc};
-use tokio::{select, signal::unix::{SignalKind, signal}, sync::watch::{Receiver, Sender}};
+use std::{
+    io::{Error, ErrorKind, Result},
+    path::PathBuf,
+    sync::Arc,
+};
+use tokio::{
+    select,
+    signal::unix::{SignalKind, signal},
+    sync::watch::{Receiver, Sender},
+};
 
-use crate::utils::{structs::{Actions, RuntimeConfigs}, utils::read_config};
+use crate::utils::{
+    structs::{Actions, RuntimeConfigs},
+    utils::read_config,
+};
 
 /// Handles signals (SIGINT, SIGTERM, SIGQUIT & SIGHUP)
-pub(crate) async fn signal_handler(tx: Sender<Actions>, mut rx: Receiver<Actions>, config_path: &PathBuf, current_config: Arc<ArcSwap<RuntimeConfigs>>) -> Result<()> {
+pub(crate) async fn signal_handler(
+    tx: Sender<Actions>, mut rx: Receiver<Actions>, config_path: &PathBuf, current_config: Arc<ArcSwap<RuntimeConfigs>>,
+) -> Result<()> {
     info!("Signal handler starting...");
 
     let action = rx.borrow().clone();
@@ -21,7 +34,7 @@ pub(crate) async fn signal_handler(tx: Sender<Actions>, mut rx: Receiver<Actions
             info!("Signal handler shut down before starting as someone panicked");
             return Ok(());
         },
-        _ => {/* At most INIT may come, which is to be ignored */}
+        _ => { /* At most INIT may come, which is to be ignored */ },
     };
 
     let mut sigint = match signal(SignalKind::interrupt()) {
@@ -101,7 +114,7 @@ pub(crate) async fn signal_handler(tx: Sender<Actions>, mut rx: Receiver<Actions
                 tx.send_replace(Actions::SHUTDOWN);
                 break 'signal_handler_loop;
             },
-            
+
             _ = sighup.recv() => {
                 info!("Received SIGHUP");
 
