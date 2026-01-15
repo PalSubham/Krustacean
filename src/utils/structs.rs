@@ -105,8 +105,10 @@ impl ForwarderMap for UdpMap {
 
 #[derive(Clone)]
 pub(crate) enum Actions {
-    INIT (Configs),
-    RELOAD (Configs),
+    INIT(Configs),
+    RELOAD(Configs),
     KILL,
-    SHUTDOWN
+    SHUTDOWN,
+    STOP(String),
+    PANICKED
 }

@@ -7,13 +7,13 @@ mod raw_bindings {
 
 use raw_bindings::_LINUX_CAPABILITY_VERSION_3;
 pub(super) use raw_bindings::{__user_cap_data_struct, __user_cap_header_struct, CAP_NET_ADMIN, CAP_NET_BIND_SERVICE};
-use std::{os::raw::c_int, process};
+use std::{os::raw::c_int, process::id as pid};
 
 impl Default for __user_cap_header_struct {
     fn default() -> Self {
         Self {
             version: _LINUX_CAPABILITY_VERSION_3,
-            pid: process::id() as c_int,
+            pid: pid() as c_int,
         }
     }
 }

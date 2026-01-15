@@ -2,65 +2,86 @@
 
 use log::{error, info};
 use std::{io::{Error, ErrorKind, Result}, path::PathBuf, sync::Arc};
-use tokio::{select, signal::unix::{SignalKind, signal}, sync::{RwLock, watch::Sender}};
+use tokio::{select, signal::unix::{SignalKind, signal}, sync::{RwLock, watch::{Receiver, Sender}}};
 
 use crate::utils::{structs::{Actions, Configs}, utils::read_config};
 
 /// Handles signals (SIGINT, SIGTERM, SIGQUIT & SIGHUP)
-pub(crate) async fn signal_handler(tx: Sender<Actions>, config_path: &PathBuf, current_config: Arc<RwLock<Configs>>) -> Result<()> {
+pub(crate) async fn signal_handler(tx: Sender<Actions>, mut rx: Receiver<Actions>, config_path: &PathBuf, current_config: Arc<RwLock<Configs>>) -> Result<()> {
     info!("Signal handler starting...");
 
-    let mut sigint = match signal(SignalKind::interrupt()) {
-        Ok(signal) => {
-            info!("SIGINT handler ready");
-            signal
+    let action = rx.borrow().clone();
+    match action {
+        Actions::STOP(s) => {
+            info!("Signal handler shut down before starting as {s} failed");
+            return Ok(());
         },
+        Actions::PANICKED => {
+            info!("Signal handler shut down before starting as someone panicked");
+            return Ok(());
+        },
+        _ => {/* At most INIT may come, which is to be ignored */}
+    };
+
+    let mut sigint = match signal(SignalKind::interrupt()) {
+        Ok(s) => s,
         Err(e) => {
             error!("Failed to set up SIGINT handler: {}", e);
-            tx.send_replace(Actions::SHUTDOWN);
             return Err(Error::new(ErrorKind::Other, "SIGINT handling failure"));
         },
     };
 
     let mut sigterm = match signal(SignalKind::terminate()) {
-        Ok(signal) => {
-            info!("SIGTERM handler ready");
-            signal
-        },
+        Ok(s) => s,
         Err(e) => {
             error!("Failed to set up SIGTERM handler: {}", e);
-            tx.send_replace(Actions::SHUTDOWN);
             return Err(Error::new(ErrorKind::Other, "SIGTERM handling failure"));
         },
     };
 
     let mut sigquit = match signal(SignalKind::quit()) {
-        Ok(signal) => {
-            info!("SIGQUIT handler ready");
-            signal
-        },
+        Ok(s) => s,
         Err(e) => {
             error!("Failed to set up SIGQUIT handler: {}", e);
-            tx.send_replace(Actions::SHUTDOWN);
             return Err(Error::new(ErrorKind::Other, "SIGQUIT handling failure"));
         },
     };
 
     let mut sighup = match signal(SignalKind::hangup()) {
-        Ok(signal) => {
-            info!("SIGHUP handler ready");
-            signal
-        },
+        Ok(s) => s,
         Err(e) => {
             error!("Failed to set up SIGHUP handler: {}", e);
-            tx.send_replace(Actions::SHUTDOWN);
             return Err(Error::new(ErrorKind::Other, "SIGHUP handling failure"));
         },
     };
 
     'signal_handler_loop: loop {
         select! {
-            biased;
+            sig = rx.changed() => {
+                match sig {
+                    Ok(_) => {
+                        let action = rx.borrow().clone();
+                        match action {
+                            Actions::STOP(s) => {
+                                info!("{s} failed...Shutting down Signal handler...");
+                                break 'signal_handler_loop;
+                            },
+                            Actions::PANICKED => {
+                                info!("Someone panicked...Shutting down Signal handler...");
+                                break 'signal_handler_loop;
+                            },
+                            _ => {
+                                /* At most RELOAD may come which is to be ignored */
+                                continue 'signal_handler_loop;
+                            }
+                        }
+                    },
+                    Err(_) => {
+                        error!("Signal channel closed...Shutting down Signal handler...");
+                        break 'signal_handler_loop;
+                    }
+                };
+            }
 
             _ = sigquit.recv() =>  {
                 info!("Received SIGQUIT");

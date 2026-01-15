@@ -12,9 +12,11 @@ use std::{
     io::{Error, IoSliceMut, Result},
     mem::size_of,
     net::{Ipv4Addr, SocketAddrV4},
-    os::fd::AsRawFd,
+    os::fd::AsRawFd, time::Duration,
 };
 use tokio::{io::unix::AsyncFd, net::TcpListener};
+
+pub(super) const DRAIN_DURATION: Duration = Duration::from_secs(5u64);
 
 #[inline(always)]
 pub(super) async fn recvfrom_cmsg_async(sock: &AsyncFd<Socket>, buf: &mut [u8]) -> Option<(SocketAddrV4, usize, SocketAddrV4)> {

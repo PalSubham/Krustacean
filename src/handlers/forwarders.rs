@@ -19,7 +19,7 @@ use tokio::{
 
 use crate::utils::structs::{Actions, ForwarderMap};
 
-use super::helpers::{recvfrom_cmsg_async, CONN_BACKLOG, create_tcp_listener, create_udp_socket_fd};
+use super::helpers::{recvfrom_cmsg_async, CONN_BACKLOG, DRAIN_DURATION, create_tcp_listener, create_udp_socket_fd};
 
 const CONN_TIMEOUT: Duration = Duration::from_secs(2u64);
 const BUFFER_SIZE: usize = 4096;
@@ -33,8 +33,15 @@ pub(crate) async fn udp_forwarder(mut rx: Receiver<Actions>) -> Result<()> {
         Actions::INIT(c) | Actions::RELOAD(c) => {
             (Arc::new(RwLock::new(c.udp_config())), c.port, create_udp_socket_fd(c.port)?)
         },
-        
-        _ => {
+        Actions::STOP(s) => {
+            info!("UDP forwarder shut down before starting as {s} failed");
+            return Ok(());
+        },
+        Actions::PANICKED => {
+            info!("UDP forwarder shut down before starting as someone panicked");
+            return Ok(());
+        },
+        Actions::KILL | Actions::SHUTDOWN => {
             info!("TCP forwarder shut down before starting");
             return Ok(());
         }
@@ -47,15 +54,13 @@ pub(crate) async fn udp_forwarder(mut rx: Receiver<Actions>) -> Result<()> {
 
     'udp_forwarder_loop: loop {
         select! {
-            biased;
-
             sig = rx.changed() => {
                 match sig {
                     Ok(_) => {
                         let action = rx.borrow().clone();
                         match action {
                             Actions::RELOAD(c) => {
-                                info!("RELOAD signal received...");
+                                info!("RELOAD signal received by UDP forwarder...");
 
                                 let mut map = udp_map.write().await;
                                 *map = c.udp_config();
@@ -73,19 +78,25 @@ pub(crate) async fn udp_forwarder(mut rx: Receiver<Actions>) -> Result<()> {
                                     }
                                 }
                             },
-                            Actions::INIT(_) => {
-                                warn!("INIT signal received...Not taking any action...");
-                                continue 'udp_forwarder_loop;
+                            Actions::STOP(s) => {
+                                info!("{s} failed...Shutting down UDP forwarder...");
+                                break 'udp_forwarder_loop;
                             },
                             Actions::KILL => {
-                                error!("KILL signal received...Killing UDP forwarder...");
+                                info!("KILL signal received...Killing UDP forwarder...");
                                 force_kill = true;
                                 break 'udp_forwarder_loop;
-                            }
-                            Actions::SHUTDOWN => {
-                                error!("SHUTDOWN signal received...Shutting down UDP forwarder...");
+                            },
+                            Actions::PANICKED => {
+                                info!("Someone panicked...Killing UDP forwarder...");
+                                force_kill = true;
                                 break 'udp_forwarder_loop;
-                            }
+                            },
+                            Actions::SHUTDOWN => {
+                                info!("SHUTDOWN signal received...Shutting down UDP forwarder...");
+                                break 'udp_forwarder_loop;
+                            },
+                            Actions::INIT(_) => {/* INIT will not come here */}
                         }
                     },
                     Err(_) => {
@@ -236,7 +247,14 @@ pub(crate) async fn udp_forwarder(mut rx: Receiver<Actions>) -> Result<()> {
     }
 
     info!("UDP forwarder is waiting for tasks to finish...");
-    (!tasks.is_empty()).then(async || while tasks.join_next().await.is_some() {});
+
+    let drain = async {
+        (!tasks.is_empty()).then(async || while tasks.join_next().await.is_some() {})
+    };
+
+    if timeout(DRAIN_DURATION, drain).await.is_err() {
+        warn!("Forced exit in UDP forwarder: tasks didn't complete in time");
+    }
 
     info!("UDP forwarder shut down");
     Ok(())
@@ -251,8 +269,15 @@ pub(crate) async fn tcp_forwarder(mut rx: Receiver<Actions>) -> Result<()> {
         Actions::INIT(c) | Actions::RELOAD(c) => {
             (Arc::new(RwLock::new(c.tcp_config())), c.port, create_tcp_listener(c.port)?)
         },
-        
-        _ => {
+        Actions::STOP(s) => {
+            info!("TCP forwarder shut down before starting as {s} failed");
+            return Ok(());
+        },
+        Actions::PANICKED => {
+            info!("TCP forwarder shut down before starting as someone panicked");
+            return Ok(());
+        },
+        Actions::KILL | Actions::SHUTDOWN => {
             info!("TCP forwarder shut down before starting");
             return Ok(());
         }
@@ -263,15 +288,13 @@ pub(crate) async fn tcp_forwarder(mut rx: Receiver<Actions>) -> Result<()> {
 
     'tcp_forwarder_loop: loop {
         select! {
-            biased;
-
             sig = rx.changed() => {
                 match sig {
                     Ok(_) => {
                         let action = rx.borrow().clone();
                         match action {
                             Actions::RELOAD(c) => {
-                                info!("RELOAD signal received...");
+                                info!("RELOAD signal received by UDP forwarder...");
 
                                 let mut map = tcp_map.write().await;
                                 *map = c.tcp_config();
@@ -289,19 +312,25 @@ pub(crate) async fn tcp_forwarder(mut rx: Receiver<Actions>) -> Result<()> {
                                     }
                                 }
                             },
-                            Actions::INIT(_) => {
-                                warn!("INIT signal received...Not taking any action...");
-                                continue 'tcp_forwarder_loop;
+                            Actions::STOP(s) => {
+                                info!("{s} failed...Shutting down TCP forwarder...");
+                                break 'tcp_forwarder_loop;
                             },
                             Actions::KILL => {
-                                error!("KILL signal received...Killing TCP forwarder...");
+                                info!("KILL signal received...Killing TCP forwarder...");
                                 force_kill = true;
                                 break 'tcp_forwarder_loop;
-                            }
-                            Actions::SHUTDOWN => {
-                                error!("SHUTDOWN signal received...Shutting down TCP forwarder...");
+                            },
+                            Actions::PANICKED => {
+                                info!("Someone panicked...Killing TCP forwarder...");
+                                force_kill = true;
                                 break 'tcp_forwarder_loop;
-                            }
+                            },
+                            Actions::SHUTDOWN => {
+                                info!("SHUTDOWN signal received...Shutting down TCP forwarder...");
+                                break 'tcp_forwarder_loop;
+                            },
+                            Actions::INIT(_) => {/* INIT will not come here */}
                         }
                     },
                     Err(_) => {
@@ -402,7 +431,14 @@ pub(crate) async fn tcp_forwarder(mut rx: Receiver<Actions>) -> Result<()> {
     }
 
     info!("TCP forwarder is waiting for tasks to finish...");
-    (!tasks.is_empty()).then(async || while tasks.join_next().await.is_some() {});
+
+    let drain = async {
+        (!tasks.is_empty()).then(async || while tasks.join_next().await.is_some() {})
+    };
+
+    if timeout(DRAIN_DURATION, drain).await.is_err() {
+        warn!("Forced exit in TCP forwarder: tasks didn't complete in time");
+    }
 
     info!("TCP forwarder shut down");
     Ok(())

@@ -10,7 +10,7 @@
 
 use log::{error, info, warn};
 use sd_notify::NotifyState;
-use std::{process::ExitCode, sync::Arc};
+use std::{process::{id as pid, ExitCode}, sync::Arc};
 use tokio::{sync::{RwLock, watch}, task::JoinSet};
 
 mod handlers;
@@ -68,39 +68,7 @@ async fn main() -> ExitCode {
 
     banner!("banner.txt");
 
-    info!("Application starting...");
-
-    /*let udp_map = match configs
-        .udp
-        .into_iter()
-        .map(|u| match Ipv4Addr::from_str(&u.upstream_ip) {
-            Ok(ip) => Ok((u.orig_port, (ip, u.upstream_port))),
-            Err(_) => {
-                error!("Invalid upstream IP address for UDP: {}", u.upstream_ip);
-                Err(())
-            },
-        })
-        .collect::<Result<HashMap<_, _>, _>>()
-    {
-        Ok(map) => Arc::new(map),
-        Err(_) => return ExitCode::FAILURE,
-    };
-
-    let tcp_map = match configs
-        .tcp
-        .into_iter()
-        .map(|t| match Ipv4Addr::from_str(&t.upstream_ip) {
-            Ok(ip) => Ok((t.orig_port, (ip, t.upstream_port))),
-            Err(_) => {
-                error!("Invalid upstream IP address for TCP: {}", t.upstream_ip);
-                Err(())
-            },
-        })
-        .collect::<Result<HashMap<_, _>, _>>()
-    {
-        Ok(map) => Arc::new(map),
-        Err(_) => return ExitCode::FAILURE,
-    };*/
+    info!("Application starting (PID: {})...", pid());
 
     let (tx, rx) = {
         let cfg = configs.read().await;
@@ -110,11 +78,12 @@ async fn main() -> ExitCode {
 
     {
         let tx = tx.clone();
+        let rx = rx.clone();
         let configs = configs.clone();
         let label = "Shutdown handler";
 
         tasks.spawn(async move {
-            match signal_handler(tx, &args.config, configs).await {
+            match signal_handler(tx.clone(), rx, &args.config, configs).await {
                 Ok(_) => Ok(((), label)),
                 Err(e) => Err((e, label)),
             }
@@ -151,12 +120,27 @@ async fn main() -> ExitCode {
         warn!("Systemd READY notify failed {e}");
     }
 
+    let mut stopping = false;
     while let Some(res) = tasks.join_next().await {
         match res {
-            Ok(Ok((_, l))) => info!("{} - exited cleanly", l),
-            Ok(Err((e, l))) => error!("{} - error: {}", l, e),
-            Err(e) => error!("Task join error: {}", e),
-        }
+            Ok(Ok((_, l))) => info!("{l} - exited cleanly"),
+            Ok(Err((e, l))) => {
+                if !stopping {
+                    stopping = true;
+                    tx.send_replace(Actions::STOP(l.into()));
+                }
+
+                error!("{l} - error: {e}");
+            },
+            Err(e) => {
+                if !stopping {
+                    stopping = true;
+                    tx.send_replace(Actions::PANICKED);
+                }
+
+                error!("Task join error: {e}");
+            },
+        };
     }
 
     info!("Application shutting down...");
@@ -166,5 +150,5 @@ async fn main() -> ExitCode {
     }
 
     info!("Application shut down");
-    return ExitCode::SUCCESS;
+    ExitCode::SUCCESS
 }
