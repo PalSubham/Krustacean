@@ -104,14 +104,14 @@ pub(crate) trait ForwarderMap {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct TcpMap(HashMap<u16, (Ipv4Addr, u16)>);
 
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) struct UdpMap(HashMap<u16, (Ipv4Addr, u16)>);
-
 impl ForwarderMap for TcpMap {
     fn get(&self, k: &u16) -> Option<&(Ipv4Addr, u16)> {
         self.0.get(k)
     }
 }
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct UdpMap(HashMap<u16, (Ipv4Addr, u16)>);
 
 impl ForwarderMap for UdpMap {
     fn get(&self, k: &u16) -> Option<&(Ipv4Addr, u16)> {

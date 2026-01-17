@@ -130,6 +130,8 @@ pub(crate) async fn signal_handler(
                         if needs_update {
                             current_config.store(Arc::new(new_config));
                             tx.send_replace(Actions::RELOAD(port_changed));
+                        } else {
+                            info!("Configuration unchanged");
                         }
                     },
                     Err(e) => error!("{e}")

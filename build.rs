@@ -2,6 +2,7 @@
 
 use std::{env, path::PathBuf};
 
+#[cfg(target_os = "linux")]
 fn main() {
     println!("cargo:rerun-if-changed=wrapper.h");
 
@@ -23,4 +24,9 @@ fn main() {
     bindings
         .write_to_file(out_path.join("bindings.rs"))
         .expect("Couldn't write to bindings.rs");
+}
+
+#[cfg(not(target_os = "linux"))]
+fn main() {
+    panic!("This build program is only intended for Linux!");
 }

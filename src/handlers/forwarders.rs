@@ -46,8 +46,10 @@ pub(crate) async fn udp_forwarder(mut rx: Receiver<Actions>, current_config: Arc
         _ => { /* RELOAD or INIT has no effect now */ },
     };
 
-    let mut config = current_config.load();
-    let mut udp_fd = create_udp_socket_fd(config.port)?;
+    let (mut udp_map, mut udp_fd) = {
+        let config = current_config.load();
+        (config.udp_map.clone(), create_udp_socket_fd(config.port)?)
+    };
     let semaphore = Arc::new(Semaphore::new(CONN_BACKLOG as usize));
     let mut tasks = JoinSet::new();
     let mut force_kill = false;
@@ -60,19 +62,23 @@ pub(crate) async fn udp_forwarder(mut rx: Receiver<Actions>, current_config: Arc
                     Ok(_) => {
                         let action = rx.borrow().clone();
                         match action {
-                            Actions::RELOAD(pc) => {
+                            Actions::RELOAD(port_changed) => {
                                 info!("RELOAD signal received by UDP forwarder...");
 
-                                config = current_config.load();
-                                if pc {
+                                let config = current_config.load();
+                                if port_changed {
                                     match create_udp_socket_fd(config.port) {
-                                        Ok(f) => udp_fd = f,
-                                        Err(e) => {
-                                            error!("{e}");
-                                            continue 'udp_forwarder_loop;
-                                        }
+                                        Ok(f) => {
+                                            udp_fd = f;
+                                            udp_map = config.udp_map.clone();
+                                        },
+                                        Err(e) => error!("{e}")
                                     };
+                                } else {
+                                    udp_map = config.udp_map.clone();
                                 }
+
+                                continue 'udp_forwarder_loop;
                             },
                             Actions::STOP(s) => {
                                 info!("{s} failed...Shutting down UDP forwarder...");
@@ -119,7 +125,7 @@ pub(crate) async fn udp_forwarder(mut rx: Receiver<Actions>, current_config: Arc
                     match semaphore.clone().try_acquire_owned() {
                         Ok(p) => {
                             let packet = buf[..len].to_vec();
-                            let udp_map = config.udp_map.clone();
+                            let udp_map = udp_map.clone();
 
                             tasks.spawn(async move {
                                 let _permit = p; // hold acquired permit
@@ -270,8 +276,10 @@ pub(crate) async fn tcp_forwarder(mut rx: Receiver<Actions>, current_config: Arc
         _ => { /* RELOAD or INIT has no effect now */ },
     };
 
-    let mut config = current_config.load();
-    let mut listener = create_tcp_listener(config.port)?;
+    let (mut tcp_map, mut listener) = {
+        let config = current_config.load();
+        (config.tcp_map.clone(), create_tcp_listener(config.port)?)
+    };
     let mut tasks = JoinSet::new();
     let mut force_kill = false;
 
@@ -282,19 +290,23 @@ pub(crate) async fn tcp_forwarder(mut rx: Receiver<Actions>, current_config: Arc
                     Ok(_) => {
                         let action = rx.borrow().clone();
                         match action {
-                            Actions::RELOAD(pc) => {
+                            Actions::RELOAD(port_changed) => {
                                 info!("RELOAD signal received by TCP forwarder...");
 
-                                config = current_config.load();
-                                if pc {
+                                let config = current_config.load();
+                                if port_changed {
                                     match create_tcp_listener(config.port) {
-                                        Ok(l) => listener = l,
-                                        Err(e) => {
-                                            error!("{e}");
-                                            continue 'tcp_forwarder_loop;
-                                        }
+                                        Ok(l) => {
+                                            listener = l;
+                                            tcp_map = config.tcp_map.clone();
+                                        },
+                                        Err(e) => error!("{e}")
                                     };
+                                } else {
+                                    tcp_map = config.tcp_map.clone();
                                 }
+
+                                continue 'tcp_forwarder_loop;
                             },
                             Actions::STOP(s) => {
                                 info!("{s} failed...Shutting down TCP forwarder...");
@@ -327,7 +339,7 @@ pub(crate) async fn tcp_forwarder(mut rx: Receiver<Actions>, current_config: Arc
             result = listener.accept() => {
                 match result {
                     Ok((mut client, src)) => {
-                        let tcp_map = config.tcp_map.clone();
+                        let tcp_map = tcp_map.clone();
 
                         tasks.spawn(async move {
                             let orig_dst = SockRef::from(&client).original_dst_v4().map(|o| o.as_socket_ipv4());

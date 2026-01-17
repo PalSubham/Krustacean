@@ -31,6 +31,7 @@ use crate::{
     },
 };
 
+#[cfg(target_os = "linux")]
 #[tokio::main]
 async fn main() -> ExitCode {
     let capable = match is_capable() {
@@ -154,4 +155,9 @@ async fn main() -> ExitCode {
 
     info!("Application shut down");
     ExitCode::SUCCESS
+}
+
+#[cfg(not(target_os = "linux"))]
+fn main() {
+    panic!("This program is only supported in Linux!");
 }

@@ -25,20 +25,29 @@ use super::{
     structs::{Configs, LogError},
 };
 
+/// Metadata header to fetch process capabilities
+static CAP_HEADER: LazyLock<__user_cap_header_struct> = LazyLock::new(__user_cap_header_struct::default);
+
+/// Required process capabilities
+const REQUIRED_CAPS: [u32; 2] = [CAP_NET_ADMIN, CAP_NET_BIND_SERVICE];
+
 /// Checks if required capabilities are effective
 #[inline(always)]
 pub(crate) fn is_capable() -> IoResult<bool> {
-    let has_cap_net_admin = match is_cap_effective(CAP_NET_ADMIN) {
-        Ok(c) => c,
-        Err(e) => return Err(e),
-    };
+    // A total of 64 capabilities are there
+    // Each field of each __user_cap_data_struct holds 32 of them as u32 bitmap (Hence, two are used)
+    // When enabled, the corresponding bit in that field is 1
+    let mut data = <[__user_cap_data_struct; 2] as Default>::default();
 
-    let has_cap_net_bind_service = match is_cap_effective(CAP_NET_BIND_SERVICE) {
-        Ok(c) => c,
-        Err(e) => return Err(e),
-    };
+    match unsafe { syscall(SYS_capget, &*CAP_HEADER as *const _, &mut data as *mut _) } {
+        0 => Ok(REQUIRED_CAPS.iter().all(|&cap| {
+            let idx = (cap / 32) as usize; // The __user_cap_data_struct which has this capability
+            let bit = cap % 32; // The corresponding bit in bitmap for that capability
 
-    Ok(has_cap_net_admin && has_cap_net_bind_service)
+            (data[idx].effective & (1 << bit)) != 0 // Check if the capability bit is 1 in the effective field of that __user_cap_data_struct
+        })),
+        _ => Err(Error::last_os_error()),
+    }
 }
 
 /// Read and parse configuration file
@@ -55,7 +64,7 @@ pub(crate) async fn read_config(path: &PathBuf) -> IoResult<Configs> {
 
 const LOG_FILE_NAME: &str = "Krustacean.log";
 
-/// Enable logging based on configuration
+/// Enable logging based on provided optional log directory. If provided it logs to file, else falls back to console logging
 #[inline(always)]
 pub(crate) fn enable_logging(log_dir: Option<&PathBuf>) -> Result<Handle, LogError> {
     let config = match log_dir {
@@ -107,26 +116,6 @@ pub(crate) fn enable_logging(log_dir: Option<&PathBuf>) -> Result<Handle, LogErr
     };
 
     Ok(init_config(config).map_err(|_| LogError::cause("Failed to create logger handle"))?)
-}
-
-/// Metadata header to fetch process capabilities
-static CAP_HEADER: LazyLock<__user_cap_header_struct> = LazyLock::new(__user_cap_header_struct::default);
-
-/// Checks if given capability is effective
-fn is_cap_effective(cap: u32) -> IoResult<bool> {
-    let mut data = <[__user_cap_data_struct; 2] as Default>::default();
-
-    let ret = unsafe { syscall(SYS_capget, &*CAP_HEADER as *const _, &mut data as *mut _) };
-
-    if ret != 0 {
-        return Err(Error::last_os_error());
-    }
-
-    let data = data;
-    let idx = (cap / 32) as usize;
-    let bit = cap % 32;
-
-    Ok((data[idx].effective & (1 << bit)) != 0)
 }
 
 /// Banner macro to log application banner with version
