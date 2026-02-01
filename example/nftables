@@ -1,0 +1,24 @@
+table inet mangle {
+	set krab_grab {
+		type inet_proto . inet_service;
+		elements = {
+			tcp . 53,
+            tcp . 80,
+			udp . 53,
+			udp . 123
+		}
+	}
+
+	chain prerouting {
+		type filter hook prerouting priority mangle;
+		socket transparent 1 meta l4proto . tcp dport @krab_grab counter meta mark set 0x3001 accept
+		meta l4proto { tcp, udp } meta l4proto . th dport @krab_grab counter tproxy ip to 127.0.0.2:8080 mark set 0x3001
+	}
+}
+
+table inet filter {
+	chain input {
+		type filter hook input priority filter;
+		meta mark 0x3001 counter accept
+	}
+}

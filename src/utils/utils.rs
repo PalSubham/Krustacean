@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use core::result::Result;
 use libc::{SYS_capget, syscall};
 use log::LevelFilter;
 use log4rs::{
@@ -25,20 +24,29 @@ use super::{
     structs::{Configs, LogError},
 };
 
+/// Metadata header to fetch process capabilities
+static CAP_HEADER: LazyLock<__user_cap_header_struct> = LazyLock::new(__user_cap_header_struct::default);
+
+/// Required process capabilities
+const REQUIRED_CAPS: [u32; 2] = [CAP_NET_ADMIN, CAP_NET_BIND_SERVICE];
+
 /// Checks if required capabilities are effective
 #[inline(always)]
 pub(crate) fn is_capable() -> IoResult<bool> {
-    let has_cap_net_admin = match is_cap_effective(CAP_NET_ADMIN) {
-        Ok(c) => c,
-        Err(e) => return Err(e),
-    };
+    // A total of 64 capabilities are there
+    // Each field of each __user_cap_data_struct holds 32 of them as u32 bitmap (Hence, two are used)
+    // When enabled, the corresponding bit in that field is 1
+    let mut data = <[__user_cap_data_struct; 2] as Default>::default();
 
-    let has_cap_net_bind_service = match is_cap_effective(CAP_NET_BIND_SERVICE) {
-        Ok(c) => c,
-        Err(e) => return Err(e),
-    };
+    match unsafe { syscall(SYS_capget, &*CAP_HEADER as *const _, &mut data as *mut _) } {
+        0 => Ok(REQUIRED_CAPS.iter().all(|&cap| {
+            let idx = (cap >> 5u32) as usize; // The __user_cap_data_struct which has this capability (cap / 32)
+            let bit = cap & 31u32; // The corresponding bit in bitmap for that capability (cap % 32)
 
-    Ok(has_cap_net_admin && has_cap_net_bind_service)
+            (data[idx].effective & (1u32 << bit)) != 0 // Check if the capability bit is 1 in the effective field of that __user_cap_data_struct
+        })),
+        _ => Err(Error::last_os_error()),
+    }
 }
 
 /// Read and parse configuration file
@@ -55,7 +63,7 @@ pub(crate) async fn read_config(path: &PathBuf) -> IoResult<Configs> {
 
 const LOG_FILE_NAME: &str = "Krustacean.log";
 
-/// Enable logging based on configuration
+/// Enable logging based on provided optional log directory. If provided it logs to file, else falls back to console logging
 #[inline(always)]
 pub(crate) fn enable_logging(log_dir: Option<&PathBuf>) -> Result<Handle, LogError> {
     let config = match log_dir {
@@ -109,32 +117,75 @@ pub(crate) fn enable_logging(log_dir: Option<&PathBuf>) -> Result<Handle, LogErr
     Ok(init_config(config).map_err(|_| LogError::cause("Failed to create logger handle"))?)
 }
 
-/// Metadata header to fetch process capabilities
-static CAP_HEADER: LazyLock<__user_cap_header_struct> = LazyLock::new(__user_cap_header_struct::default);
-
-/// Checks if given capability is effective
-fn is_cap_effective(cap: u32) -> IoResult<bool> {
-    let mut data = <[__user_cap_data_struct; 2] as Default>::default();
-
-    let ret = unsafe { syscall(SYS_capget, &*CAP_HEADER as *const _, &mut data as *mut _) };
-
-    if ret != 0 {
-        return Err(Error::last_os_error());
-    }
-
-    let data = data;
-    let idx = (cap / 32) as usize;
-    let bit = cap % 32;
-
-    Ok((data[idx].effective & (1 << bit)) != 0)
-}
-
 /// Banner macro to log application banner with version
 macro_rules! banner {
-    ($file:literal) => {{
-        let banner = ::const_format::str_replace!(::core::include_str!($file), "@project_version@", ::core::env!("CARGO_PKG_VERSION"));
-        ::log::info!("{banner}");
-    }};
+    ($file:literal) => {
+        #[cfg(not(test))]
+        {
+            let banner = const_format::str_replace!(include_str!($file), "@project_version@", env!("CARGO_PKG_VERSION"));
+            log::info!("{banner}");
+        }
+        #[cfg(test)]
+        {}
+    };
 }
 
 pub(crate) use banner;
+
+#[cfg(test)]
+mod tests {
+    #![allow(non_snake_case)]
+
+    use serde_json::json;
+    use tempfile::tempdir;
+    use tokio::fs::{File, write};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_read_config() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path().to_path_buf();
+
+        // non-existent file
+        let file_path_nonexistent = dir_path.join("nonexistent_config.conf");
+        assert!(!file_path_nonexistent.exists());
+        let mut result = read_config(&file_path_nonexistent).await;
+        assert!(result.is_err());
+        assert_eq!(ErrorKind::NotFound, result.unwrap_err().kind());
+
+        // not a file
+        result = read_config(&dir_path).await;
+        assert!(result.is_err());
+        assert_eq!(ErrorKind::InvalidInput, result.unwrap_err().kind());
+
+        // using actual file
+        let file_path = dir_path.join("config.conf");
+        File::create(file_path.clone()).await.unwrap();
+        assert!(file_path.exists());
+
+        write(&file_path, b"abcd").await.unwrap();
+        result = read_config(&file_path).await;
+        assert!(result.is_err());
+        assert_eq!(ErrorKind::InvalidData, result.unwrap_err().kind());
+
+        let conf = json!({
+            "port": 8080,
+            "udp": [{
+                "upstream_ip": "10.0.0.1",
+                "upstream_port": 53,
+                "orig_port": 53
+            }],
+            "tcp": [{
+                "upstream_ip": "10.0.0.1",
+                "upstream_port": 53,
+                "orig_port": 53
+            }]
+        });
+        write(&file_path, serde_json::to_string(&conf).unwrap())
+            .await
+            .unwrap();
+        result = read_config(&file_path).await;
+        assert!(result.is_ok());
+    }
+}

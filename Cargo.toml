@@ -7,16 +7,21 @@ license = "GPL-3.0-or-later"
 readme = "README.md"
 
 [dependencies]
-tokio = { version = "1", features = [ "rt-multi-thread", "io-util", "net", "macros", "signal", "sync", "fs", "time" ] }
+tokio = { version = "1.48", features = [ "rt-multi-thread", "io-util", "net", "macros", "signal", "sync", "fs", "time" ] }
 socket2 = "0.6"
 log = "0.4"
 log4rs = "1.4"
 nix = { version = "0.30", features = [ "socket", "uio", "net", "fs" ] }
-serde = { version = "1", features = [ "derive" ] }
-serde_json = "1"
+serde = { version = "1.0", features = [ "derive" ] }
+serde_json = "1.0"
 sd-notify = "0.4"
 libc = "0.2"
 const_format = "0.2"
+arc-swap = "1.8"
 
 [build-dependencies]
 bindgen = "0.72"
+
+[dev-dependencies]
+serial_test = "3.3"
+tempfile = "3.24"

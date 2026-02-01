@@ -8,10 +8,14 @@
  * (at your option) any later version.
  */
 
+use arc_swap::ArcSwap;
 use log::{error, info, warn};
 use sd_notify::NotifyState;
-use std::{collections::HashMap, net::Ipv4Addr, process::ExitCode, str::FromStr, sync::Arc};
-use tokio::{sync::Notify, task::JoinSet};
+use std::{
+    process::{ExitCode, id as pid},
+    sync::Arc,
+};
+use tokio::{sync::watch, task::JoinSet};
 
 mod handlers;
 mod utils;
@@ -19,14 +23,15 @@ mod utils;
 use crate::{
     handlers::{
         forwarders::{tcp_forwarder, udp_forwarder},
-        shutdown_handler::shutdown_handler,
+        signal_handler::signal_handler,
     },
     utils::{
-        structs::Args,
+        structs::{Actions, Args, RuntimeConfigs},
         utils::{banner, enable_logging, is_capable, read_config},
     },
 };
 
+#[cfg(target_os = "linux")]
 #[tokio::main]
 async fn main() -> ExitCode {
     let capable = match is_capable() {
@@ -50,14 +55,6 @@ async fn main() -> ExitCode {
         },
     };
 
-    let configs = match read_config(&args.config).await {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            return ExitCode::FAILURE;
-        },
-    };
-
     let _handle = match enable_logging(args.logdir.as_ref()) {
         Ok(handle) => handle,
         Err(e) => {
@@ -68,75 +65,53 @@ async fn main() -> ExitCode {
 
     banner!("banner.txt");
 
-    info!("Application starting...");
+    info!("Application starting (PID: {})...", pid());
 
-    let udp_map = match configs
-        .udp
-        .into_iter()
-        .map(|u| match Ipv4Addr::from_str(&u.upstream_ip) {
-            Ok(ip) => Ok((u.orig_port, (ip, u.upstream_port))),
-            Err(_) => {
-                error!("Invalid upstream IP address for UDP: {}", u.upstream_ip);
-                Err(())
-            },
-        })
-        .collect::<Result<HashMap<_, _>, _>>()
-    {
-        Ok(map) => Arc::new(map),
-        Err(_) => return ExitCode::FAILURE,
+    let configs = match read_config(&args.config).await {
+        Ok(c) => Arc::new(ArcSwap::from_pointee(RuntimeConfigs::from(&c))),
+        Err(e) => {
+            error!("{e}");
+            return ExitCode::FAILURE;
+        },
     };
 
-    let tcp_map = match configs
-        .tcp
-        .into_iter()
-        .map(|t| match Ipv4Addr::from_str(&t.upstream_ip) {
-            Ok(ip) => Ok((t.orig_port, (ip, t.upstream_port))),
-            Err(_) => {
-                error!("Invalid upstream IP address for TCP: {}", t.upstream_ip);
-                Err(())
-            },
-        })
-        .collect::<Result<HashMap<_, _>, _>>()
-    {
-        Ok(map) => Arc::new(map),
-        Err(_) => return ExitCode::FAILURE,
-    };
-
-    let shutdown = Arc::new(Notify::new());
+    let (tx, rx) = watch::channel(Actions::INIT);
     let mut tasks = JoinSet::new();
 
     {
-        let shutdown = shutdown.clone();
-        let udp_map = udp_map.clone();
-        let label = "UDP forwarder";
-
-        tasks.spawn(async move {
-            match udp_forwarder(udp_map, configs.port, shutdown).await {
-                Ok(_) => Ok(((), label)),
-                Err(e) => Err((e, label)),
-            }
-        });
-    }
-
-    {
-        let shutdown = shutdown.clone();
-        let tcp_map = tcp_map.clone();
-        let label = "TCP forwarder";
-
-        tasks.spawn(async move {
-            match tcp_forwarder(tcp_map, configs.port, shutdown).await {
-                Ok(_) => Ok(((), label)),
-                Err(e) => Err((e, label)),
-            }
-        });
-    }
-
-    {
-        let shutdown = shutdown.clone();
+        let tx = tx.clone();
+        let rx = rx.clone();
+        let configs = configs.clone();
         let label = "Shutdown handler";
 
         tasks.spawn(async move {
-            match shutdown_handler(shutdown.clone()).await {
+            match signal_handler(tx.clone(), rx, &args.config, configs).await {
+                Ok(_) => Ok(((), label)),
+                Err(e) => Err((e, label)),
+            }
+        });
+    }
+
+    {
+        let rx = rx.clone();
+        let configs = configs.clone();
+        let label = "UDP forwarder";
+
+        tasks.spawn(async move {
+            match udp_forwarder(rx, configs).await {
+                Ok(_) => Ok(((), label)),
+                Err(e) => Err((e, label)),
+            }
+        });
+    }
+
+    {
+        let rx = rx.clone();
+        let configs = configs.clone();
+        let label = "TCP forwarder";
+
+        tasks.spawn(async move {
+            match tcp_forwarder(rx, configs).await {
                 Ok(_) => Ok(((), label)),
                 Err(e) => Err((e, label)),
             }
@@ -149,12 +124,27 @@ async fn main() -> ExitCode {
         warn!("Systemd READY notify failed {e}");
     }
 
+    let mut stopping = false;
     while let Some(res) = tasks.join_next().await {
         match res {
-            Ok(Ok((_, l))) => info!("{} - exited cleanly", l),
-            Ok(Err((e, l))) => error!("{} - error: {}", l, e),
-            Err(e) => error!("Task join error: {}", e),
-        }
+            Ok(Ok((_, l))) => info!("{l} - exited cleanly"),
+            Ok(Err((e, l))) => {
+                if !stopping {
+                    stopping = true;
+                    tx.send_replace(Actions::STOP(l));
+                }
+
+                error!("{l} - error: {e}");
+            },
+            Err(e) => {
+                if !stopping {
+                    stopping = true;
+                    tx.send_replace(Actions::PANICKED);
+                }
+
+                error!("Task join error: {e}");
+            },
+        };
     }
 
     info!("Application shutting down...");
@@ -164,5 +154,8 @@ async fn main() -> ExitCode {
     }
 
     info!("Application shut down");
-    return ExitCode::SUCCESS;
+    ExitCode::SUCCESS
 }
+
+#[cfg(not(target_os = "linux"))]
+compile_error!("This program is only supported in Linux!");
