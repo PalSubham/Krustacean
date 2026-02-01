@@ -21,9 +21,32 @@ impl Default for __user_cap_header_struct {
 impl Default for __user_cap_data_struct {
     fn default() -> Self {
         Self {
-            effective: 0,
-            permitted: 0,
-            inheritable: 0,
+            effective: u32::default(),
+            permitted: u32::default(),
+            inheritable: u32::default(),
         }
+    }
+}
+
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod tests {
+    #![allow(non_snake_case)]
+
+    use super::*;
+
+    #[test]
+    fn test__user_cap_header_struct_default() {
+        let header = __user_cap_header_struct::default();
+        assert_eq!(pid(), header.pid as u32);
+        assert_eq!(_LINUX_CAPABILITY_VERSION_3, header.version);
+    }
+
+    #[test]
+    fn test__user_cap_data_struct_default() {
+        let data = __user_cap_data_struct::default();
+        assert_eq!(0u32, data.effective);
+        assert_eq!(0u32, data.permitted);
+        assert_eq!(0u32, data.inheritable);
     }
 }

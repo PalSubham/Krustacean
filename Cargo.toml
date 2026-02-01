@@ -21,3 +21,7 @@ arc-swap = "1.8"
 
 [build-dependencies]
 bindgen = "0.72"
+
+[dev-dependencies]
+serial_test = "3.3"
+tempfile = "3.24"

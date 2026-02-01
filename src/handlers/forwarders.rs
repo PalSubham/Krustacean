@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use arc_swap::ArcSwap;
-use core::convert::Into;
 use log::{error, info, warn};
 use socket2::{Domain, Protocol, SockRef, Socket, Type};
 use std::{
@@ -20,7 +19,7 @@ use tokio::{
 
 use crate::utils::structs::{Actions, ForwarderMap, RuntimeConfigs};
 
-use super::helpers::{CONN_BACKLOG, DRAIN_DURATION, create_tcp_listener, create_udp_socket_fd, recvfrom_cmsg_async};
+use super::helpers::{CONN_BACKLOG, DRAIN_DURATION, create_tcp_listener, create_udp_socket_fd, recvfrom_cmsg};
 
 const CONN_TIMEOUT: Duration = Duration::from_secs(2u64);
 const BUFFER_SIZE: usize = 4096;
@@ -117,7 +116,7 @@ pub(crate) async fn udp_forwarder(mut rx: Receiver<Actions>, current_config: Arc
                     }
                 };
 
-                let recv_res = recvfrom_cmsg_async(&udp_fd, &mut buf).await;
+                let recv_res = recvfrom_cmsg(&udp_fd, &mut buf);
 
                 guard.clear_ready();
 

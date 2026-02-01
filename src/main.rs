@@ -158,6 +158,4 @@ async fn main() -> ExitCode {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn main() {
-    panic!("This program is only supported in Linux!");
-}
+compile_error!("This program is only supported in Linux!");
