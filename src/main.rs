@@ -11,10 +11,7 @@
 use arc_swap::ArcSwap;
 use log::{error, info, warn};
 use sd_notify::NotifyState;
-use std::{
-    process::{ExitCode, id as pid},
-    sync::Arc,
-};
+use std::{process::ExitCode, sync::Arc};
 use tokio::{sync::watch, task::JoinSet};
 
 mod handlers;
@@ -65,7 +62,7 @@ async fn main() -> ExitCode {
 
     banner!("banner.txt");
 
-    info!("Application starting (PID: {})...", pid());
+    info!("Application starting...");
 
     let configs = match read_config(&args.config).await {
         Ok(c) => Arc::new(ArcSwap::from_pointee(RuntimeConfigs::from(&c))),

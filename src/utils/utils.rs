@@ -15,23 +15,16 @@ use std::{
     io::{Error, ErrorKind, Result as IoResult},
     os::unix::fs::PermissionsExt,
     path::PathBuf,
-    sync::LazyLock,
 };
 use tokio::fs::read_to_string;
 
 use super::{
-    bindings::{__user_cap_data_struct, __user_cap_header_struct, CAP_NET_ADMIN, CAP_NET_BIND_SERVICE},
+    bindings::__user_cap_data_struct,
+    constants::{CAP_HEADER, LOG_FILE_NAME, REQUIRED_CAPS},
     structs::{Configs, LogError},
 };
 
-/// Metadata header to fetch process capabilities
-static CAP_HEADER: LazyLock<__user_cap_header_struct> = LazyLock::new(__user_cap_header_struct::default);
-
-/// Required process capabilities
-const REQUIRED_CAPS: [u32; 2] = [CAP_NET_ADMIN, CAP_NET_BIND_SERVICE];
-
 /// Checks if required capabilities are effective
-#[inline(always)]
 pub(crate) fn is_capable() -> IoResult<bool> {
     // A total of 64 capabilities are there
     // Each field of each __user_cap_data_struct holds 32 of them as u32 bitmap (Hence, two are used)
@@ -50,7 +43,6 @@ pub(crate) fn is_capable() -> IoResult<bool> {
 }
 
 /// Read and parse configuration file
-#[inline(always)]
 pub(crate) async fn read_config(path: &PathBuf) -> IoResult<Configs> {
     if !path.exists() {
         return Err(Error::new(ErrorKind::NotFound, "Configuration file not found"));
@@ -61,10 +53,7 @@ pub(crate) async fn read_config(path: &PathBuf) -> IoResult<Configs> {
     from_str(&read_to_string(path).await?).map_err(|e| Error::new(ErrorKind::InvalidData, format!("Failed to deserialize configuration file - {e}")))
 }
 
-const LOG_FILE_NAME: &str = "Krustacean.log";
-
 /// Enable logging based on provided optional log directory. If provided it logs to file, else falls back to console logging
-#[inline(always)]
 pub(crate) fn enable_logging(log_dir: Option<&PathBuf>) -> Result<Handle, LogError> {
     let config = match log_dir {
         Some(dir) => {
@@ -122,8 +111,10 @@ macro_rules! banner {
     ($file:literal) => {
         #[cfg(not(test))]
         {
-            let banner = const_format::str_replace!(include_str!($file), "@project_version@", env!("CARGO_PKG_VERSION"));
-            log::info!("{banner}");
+            let pid_string = (*$crate::utils::constants::PID).to_string();
+            let banner = ::const_format::str_replace!(::std::include_str!($file), "@project_version@", ::std::env!("CARGO_PKG_VERSION"))
+                .replace("@pid@", &pid_string);
+            ::log::info!("{banner}");
         }
         #[cfg(test)]
         {}

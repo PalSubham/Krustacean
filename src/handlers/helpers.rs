@@ -13,13 +13,11 @@ use std::{
     mem::size_of,
     net::{Ipv4Addr, SocketAddrV4},
     os::fd::AsRawFd,
-    time::Duration,
 };
 use tokio::{io::unix::AsyncFd, net::TcpListener};
 
-pub(super) const DRAIN_DURATION: Duration = Duration::from_secs(5u64);
+use super::constants::{CONN_BACKLOG, LISTEN_IP};
 
-#[inline(always)]
 pub(super) fn recvfrom_cmsg(sock: &AsyncFd<Socket>, buf: &mut [u8]) -> Option<(SocketAddrV4, usize, SocketAddrV4)> {
     let mut cmsg_buf = cmsg_space!(sockaddr_in);
     let mut iov = [IoSliceMut::new(buf)];
@@ -69,9 +67,6 @@ pub(super) fn recvfrom_cmsg(sock: &AsyncFd<Socket>, buf: &mut [u8]) -> Option<(S
     }
 }
 
-const LISTEN_IP: [u8; 4] = [127, 0, 0, 2];
-pub(super) const CONN_BACKLOG: u32 = 100;
-
 pub(super) fn create_udp_socket_fd(port: u16) -> Result<AsyncFd<Socket>> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_ip_transparent_v4(true)?;
@@ -95,7 +90,6 @@ trait ExtendedSocket {
 }
 
 impl ExtendedSocket for Socket {
-    #[inline(always)]
     fn set_recv_orig_dst_addr(&self, recv: bool) -> Result<()> {
         let recv = recv as c_int;
 

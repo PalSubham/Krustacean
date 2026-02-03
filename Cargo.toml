@@ -1,6 +1,6 @@
 [package]
 name = "Krustacean"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "A transparent proxy for UDP & TCP"
 license = "GPL-3.0-or-later"

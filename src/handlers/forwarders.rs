@@ -14,15 +14,15 @@ use tokio::{
     select,
     sync::{Semaphore, TryAcquireError, watch::Receiver},
     task::JoinSet,
-    time::{Duration, timeout},
+    time::timeout,
 };
 
 use crate::utils::structs::{Actions, ForwarderMap, RuntimeConfigs};
 
-use super::helpers::{CONN_BACKLOG, DRAIN_DURATION, create_tcp_listener, create_udp_socket_fd, recvfrom_cmsg};
-
-const CONN_TIMEOUT: Duration = Duration::from_secs(2u64);
-const BUFFER_SIZE: usize = 4096;
+use super::{
+    constants::{BUFFER_SIZE, CONN_BACKLOG, CONN_TIMEOUT, DRAIN_DURATION},
+    helpers::{create_tcp_listener, create_udp_socket_fd, recvfrom_cmsg},
+};
 
 /// UDP forwarder function
 pub(crate) async fn udp_forwarder(mut rx: Receiver<Actions>, current_config: Arc<ArcSwap<RuntimeConfigs>>) -> Result<()> {

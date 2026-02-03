@@ -5,20 +5,25 @@ mod raw_bindings {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 
+use std::ffi::c_int;
+
 use raw_bindings::_LINUX_CAPABILITY_VERSION_3;
 pub(super) use raw_bindings::{__user_cap_data_struct, __user_cap_header_struct, CAP_NET_ADMIN, CAP_NET_BIND_SERVICE};
-use std::{os::raw::c_int, process::id as pid};
+
+use super::constants::PID;
 
 impl Default for __user_cap_header_struct {
+    #[inline(always)]
     fn default() -> Self {
         Self {
             version: _LINUX_CAPABILITY_VERSION_3,
-            pid: pid() as c_int,
+            pid: *PID as c_int,
         }
     }
 }
 
 impl Default for __user_cap_data_struct {
+    #[inline(always)]
     fn default() -> Self {
         Self {
             effective: u32::default(),
@@ -32,6 +37,8 @@ impl Default for __user_cap_data_struct {
 #[cfg(target_os = "linux")]
 mod tests {
     #![allow(non_snake_case)]
+
+    use std::process::id as pid;
 
     use super::*;
 

@@ -139,34 +139,6 @@ mod tests {
 
     use super::*;
 
-    macro_rules! hashset {
-        ($($value:expr,)+) => { hashset!($($value),+) };
-        ($($value:expr),*) => {
-            {
-                let cap = <[()]>::len(&[$({ let _ = &$value; () }),*]);
-                let mut set = std::collections::HashSet::with_capacity(cap);
-                $(
-                    set.insert($value);
-                )*
-                set
-            }
-        };
-    }
-
-    macro_rules! hashmap {
-        ($($key:expr => $value:expr,)+) => { hashmap!($($key => $value),+) };
-        ($($key:expr => $value:expr),*) => {
-            {
-                let cap = <[()]>::len(&[$({ let _ = &$key; () }),*]);
-                let mut map = std::collections::HashMap::with_capacity(cap);
-                $(
-                    map.insert($key, $value);
-                )*
-                map
-            }
-        };
-    }
-
     #[test]
     fn test_LogError_cause() {
         let msg = String::from("err");
@@ -220,36 +192,24 @@ mod tests {
 
         let configs = Configs {
             port: outer_port,
-            udp: hashset! {
-                Forwarders {
-                    upstream_ip: ip,
-                    upstream_port: inner_port,
-                    orig_port: inner_port
-                }
-            },
-            tcp: hashset! {
-                Forwarders {
-                    upstream_ip: ip,
-                    upstream_port: inner_port,
-                    orig_port: inner_port
-                }
-            },
+            udp: [Forwarders {
+                upstream_ip: ip,
+                upstream_port: inner_port,
+                orig_port: inner_port,
+            }]
+            .into(),
+            tcp: [Forwarders {
+                upstream_ip: ip,
+                upstream_port: inner_port,
+                orig_port: inner_port,
+            }]
+            .into(),
         };
 
         let runtime_configs = RuntimeConfigs::from(&configs);
         assert_eq!(outer_port, runtime_configs.port);
-        assert_eq!(
-            hashmap! {
-                inner_port => (ip, inner_port)
-            },
-            runtime_configs.tcp_map.0
-        );
-        assert_eq!(
-            hashmap! {
-                inner_port => (ip, inner_port)
-            },
-            runtime_configs.udp_map.0
-        );
+        assert_eq!(HashMap::from([(inner_port, (ip, inner_port))]), runtime_configs.tcp_map.0);
+        assert_eq!(HashMap::from([(inner_port, (ip, inner_port))]), runtime_configs.udp_map.0);
     }
 
     #[test]
@@ -257,9 +217,7 @@ mod tests {
         let ip = Ipv4Addr::from([10, 0, 0, 1]);
         let port = 53u16;
         let no_port = 123u16;
-        let map = hashmap! {
-            port => (ip, port)
-        };
+        let map = HashMap::from([(port, (ip, port))]);
 
         let tcp_map = TcpMap(map.clone());
         assert_eq!(Some(&(ip, port)), tcp_map.get(&port));
