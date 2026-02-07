@@ -1,19 +1,20 @@
 [Unit]
 Description=Krustacean Transparent Proxy
-After=network.target
+After=network.target Krustacean-router.service
 StartLimitIntervalSec=10
 StartLimitBurst=3
 
 [Service]
-Type=notify
+Type=notify-reload
+NotifyAccess=main
 
 User=krab
 Group=krab
 
-EnvironmentFile=/opt/Krustacean/etc/env.conf
+ExecStart=/opt/Krustacean
 
-ExecStart=/opt/Krustacean/bin/Krustacean
-ExecReload=/bin/kill -HUP $MAINPID
+ReloadSignal=SIGHUP
+KillSignal=SIGTERM
 
 Restart=on-failure
 RestartSec=5s
@@ -24,6 +25,17 @@ NoNewPrivileges=true
 
 LogsDirectory=Krustacean
 LogsDirectoryMode=0755
+ConfigurationDirectory=Krustacean
+ConfigurationDirectoryMode=0755
+
+StandardOutput=journal
+StandardError=journal
+
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
 
 [Install]
 WantedBy=multi-user.target

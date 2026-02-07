@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use arc_swap::ArcSwap;
-use log::{error, info};
+use log::{error, info, warn};
+use sd_notify::{NotifyState, notify};
 use std::{
     io::{Error, ErrorKind, Result},
     path::PathBuf,
@@ -17,6 +18,8 @@ use crate::utils::{
     structs::{Actions, RuntimeConfigs},
     utils::read_config,
 };
+
+use super::constants::LISTEN_IP;
 
 /// Handles signals (SIGINT, SIGTERM, SIGQUIT & SIGHUP)
 pub(crate) async fn signal_handler(
@@ -118,6 +121,18 @@ pub(crate) async fn signal_handler(
             _ = sighup.recv() => {
                 info!("Received SIGHUP");
 
+                let clock_monotonic = match NotifyState::monotonic_usec_now() {
+                    Ok(m) => m,
+                    Err(e) => {
+                        error!("Reload aborted due to failure in determining CLOCK_MONOTONIC - {e}");
+                        continue 'signal_handler_loop;
+                    }
+                };
+
+                if let Err(e) = notify(false, &[NotifyState::Reloading, clock_monotonic]) {
+                    warn!("Systemd RELOADING & MONOTONIC_USEC notify failed - {e}");
+                }
+
                 match read_config(config_path).await {
                     Ok(new_file_config) => {
                         let new_config = RuntimeConfigs::from(&new_file_config);
@@ -136,6 +151,19 @@ pub(crate) async fn signal_handler(
                     },
                     Err(e) => error!("{e}")
                 };
+
+                if let Err(e) = notify(false, &[NotifyState::Ready]) {
+                    warn!("Systemd READY notify failed after reload - {e}");
+                }
+
+                if let Err(e) = notify(
+                    false,
+                    &[NotifyState::Status(
+                        &format!("Configured to listen at {}:{}", LISTEN_IP, current_config.load().port)
+                    )]
+                ) {
+                    warn!("Systemd STATUS notify failed - {e}");
+                }
 
                 continue 'signal_handler_loop;
             },

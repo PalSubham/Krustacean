@@ -11,7 +11,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 use std::{
     io::{Error, IoSliceMut, Result},
     mem::size_of,
-    net::{Ipv4Addr, SocketAddrV4},
+    net::SocketAddrV4,
     os::fd::AsRawFd,
 };
 use tokio::{io::unix::AsyncFd, net::TcpListener};
@@ -72,7 +72,7 @@ pub(super) fn create_udp_socket_fd(port: u16) -> Result<AsyncFd<Socket>> {
     socket.set_ip_transparent_v4(true)?;
     socket.set_recv_orig_dst_addr(true)?;
     socket.set_nonblocking(true)?;
-    socket.bind(&SocketAddrV4::new(Ipv4Addr::from(LISTEN_IP), port).into())?;
+    socket.bind(&SocketAddrV4::new(LISTEN_IP, port).into())?;
     AsyncFd::new(socket)
 }
 
@@ -80,7 +80,7 @@ pub(super) fn create_tcp_listener(port: u16) -> Result<TcpListener> {
     let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
     socket.set_ip_transparent_v4(true)?;
     socket.set_nonblocking(true)?;
-    socket.bind(&SocketAddrV4::new(Ipv4Addr::from(LISTEN_IP), port).into())?;
+    socket.bind(&SocketAddrV4::new(LISTEN_IP, port).into())?;
     socket.listen(CONN_BACKLOG as i32)?;
     TcpListener::from_std(socket.into())
 }
@@ -113,6 +113,7 @@ impl ExtendedSocket for Socket {
 mod tests {
 
     use libc::getsockopt;
+    use std::net::Ipv4Addr;
     use tokio::net::UdpSocket;
 
     use super::*;

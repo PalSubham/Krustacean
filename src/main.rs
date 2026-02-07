@@ -10,7 +10,7 @@
 
 use arc_swap::ArcSwap;
 use log::{error, info, warn};
-use sd_notify::NotifyState;
+use sd_notify::{NotifyState, notify};
 use std::{process::ExitCode, sync::Arc};
 use tokio::{sync::watch, task::JoinSet};
 
@@ -19,6 +19,7 @@ mod utils;
 
 use crate::{
     handlers::{
+        constants::LISTEN_IP,
         forwarders::{tcp_forwarder, udp_forwarder},
         signal_handler::signal_handler,
     },
@@ -52,7 +53,7 @@ async fn main() -> ExitCode {
         },
     };
 
-    let _handle = match enable_logging(args.logdir.as_ref()) {
+    let _handle = match enable_logging(args.log_dir.as_ref()) {
         Ok(handle) => handle,
         Err(e) => {
             eprintln!("{e}");
@@ -64,7 +65,7 @@ async fn main() -> ExitCode {
 
     info!("Application starting...");
 
-    let configs = match read_config(&args.config).await {
+    let configs = match read_config(&args.config_file).await {
         Ok(c) => Arc::new(ArcSwap::from_pointee(RuntimeConfigs::from(&c))),
         Err(e) => {
             error!("{e}");
@@ -82,7 +83,7 @@ async fn main() -> ExitCode {
         let label = "Shutdown handler";
 
         tasks.spawn(async move {
-            match signal_handler(tx.clone(), rx, &args.config, configs).await {
+            match signal_handler(tx.clone(), rx, &args.config_file, configs).await {
                 Ok(_) => Ok(((), label)),
                 Err(e) => Err((e, label)),
             }
@@ -117,8 +118,19 @@ async fn main() -> ExitCode {
 
     info!("Application started");
 
-    if let Err(e) = sd_notify::notify(false, &[NotifyState::Ready]) {
-        warn!("Systemd READY notify failed {e}");
+    if let Err(e) = notify(false, &[NotifyState::Ready]) {
+        warn!("Systemd READY notify failed - {e}");
+    }
+
+    if let Err(e) = notify(
+        false,
+        &[NotifyState::Status(&format!(
+            "Configured to listen at {}:{}",
+            LISTEN_IP,
+            configs.load().port
+        ))],
+    ) {
+        warn!("Systemd STATUS notify failed - {e}");
     }
 
     let mut stopping = false;
@@ -146,8 +158,8 @@ async fn main() -> ExitCode {
 
     info!("Application shutting down...");
 
-    if let Err(e) = sd_notify::notify(false, &[NotifyState::Stopping]) {
-        warn!("Systemd STOPPING notify failed {e}");
+    if let Err(e) = notify(false, &[NotifyState::Stopping]) {
+        warn!("Systemd STOPPING notify failed - {e}");
     }
 
     info!("Application shut down");

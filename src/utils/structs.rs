@@ -11,6 +11,8 @@ use std::{
     sync::Arc,
 };
 
+use super::constants::CONFIG_FILE_NAME;
+
 /// Logging error structure
 #[derive(Debug)]
 pub(crate) struct LogError {
@@ -33,25 +35,25 @@ impl Error for LogError {}
 
 /// Env variable arguments structure
 pub(crate) struct Args {
-    pub(crate) config: PathBuf,
-    pub(crate) logdir: Option<PathBuf>,
+    pub(crate) config_file: PathBuf,
+    pub(crate) log_dir: Option<PathBuf>,
 }
 
 impl Args {
     pub(crate) fn new() -> Result<Self, String> {
-        let config = match env::var("CONFIG_FILE") {
-            Ok(f) => PathBuf::from(f),
-            Err(VarError::NotPresent) => return Err("Env variable \"CONFIG_FILE\" not found".into()),
-            Err(VarError::NotUnicode(_)) => return Err("Non-unicode env variable \"CONFIG_FILE\"".into()),
+        let config_file = match env::var("CONFIGURATION_DIRECTORY") {
+            Ok(f) => PathBuf::from(f).join(CONFIG_FILE_NAME),
+            Err(VarError::NotPresent) => return Err("Env variable \"CONFIGURATION_DIRECTORY\" not found".into()),
+            Err(VarError::NotUnicode(_)) => return Err("Non-unicode env variable \"CONFIGURATION_DIRECTORY\"".into()),
         };
 
-        let logdir = match env::var("LOGS_DIRECTORY") {
+        let log_dir = match env::var("LOGS_DIRECTORY") {
             Ok(l) => Some(PathBuf::from(l)),
             Err(VarError::NotPresent) => None,
             Err(VarError::NotUnicode(_)) => return Err("Non-unicode env variable \"LOGS_DIRECTORY\"".into()),
         };
 
-        Ok(Self { config, logdir })
+        Ok(Self { config_file, log_dir })
     }
 }
 
@@ -157,29 +159,32 @@ mod tests {
     #[serial(env)]
     fn test_Args_new() {
         let dir = tempdir().unwrap();
-        let dir_str = dir.path().as_os_str();
+        let dir_path = dir.path();
+        let dir_str = dir_path.as_os_str();
+        let dir_pathbuf = dir_path.to_path_buf();
+        let config_file_pathbuf = dir_pathbuf.join(CONFIG_FILE_NAME);
 
         let mut args = Args::new();
         assert!(args.is_err());
 
         unsafe {
-            env::set_var("CONFIG_FILE", dir_str);
+            env::set_var("CONFIGURATION_DIRECTORY", dir_str);
         };
         args = Args::new();
         assert!(args.is_ok());
-        assert_eq!(dir_str, args.as_ref().unwrap().config.as_os_str());
-        assert!(args.as_ref().unwrap().logdir.is_none());
+        assert_eq!(config_file_pathbuf, args.as_ref().unwrap().config_file);
+        assert!(args.as_ref().unwrap().log_dir.is_none());
 
         unsafe {
             env::set_var("LOGS_DIRECTORY", dir_str);
         };
         args = Args::new();
         assert!(args.is_ok());
-        assert!(args.as_ref().unwrap().logdir.is_some());
-        assert_eq!(dir_str, args.as_ref().unwrap().logdir.as_ref().unwrap().as_os_str());
+        assert!(args.as_ref().unwrap().log_dir.is_some());
+        assert_eq!(dir_pathbuf, *args.as_ref().unwrap().log_dir.as_ref().unwrap());
 
         unsafe {
-            env::remove_var("CONFIG_FILE");
+            env::remove_var("CONFIGURATION_DIRECTORY");
             env::remove_var("LOGS_DIRECTORY");
         }
     }
@@ -214,7 +219,7 @@ mod tests {
 
     #[test]
     fn test_ForwarderMap_get() {
-        let ip = Ipv4Addr::from([10, 0, 0, 1]);
+        let ip = Ipv4Addr::from([10u8, 0u8, 0u8, 1u8]);
         let port = 53u16;
         let no_port = 123u16;
         let map = HashMap::from([(port, (ip, port))]);
