@@ -3,6 +3,8 @@
 use std::{env, path::PathBuf};
 
 fn main() {
+    println!("cargo::rerun-if-changed=wrapper.h");
+
     let target_os = env::var("CARGO_CFG_TARGET_OS").expect("CARGO_CFG_TARGET_OS not set");
 
     if target_os != "linux" {
@@ -18,6 +20,8 @@ fn main() {
             .allowlist_var("CAP_NET_ADMIN")
             .derive_copy(false)
             .derive_debug(false)
+            .derive_default(false)
+            .generate_comments(true)
             .generate()
             .expect("Unable to generate bindings for wrapper.h");
 
