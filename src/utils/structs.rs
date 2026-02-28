@@ -58,7 +58,7 @@ impl Args {
 }
 
 /// Application configuration structure
-#[derive(Debug, Deserialize, Clone, Eq, PartialEq)]
+#[derive(Debug, Deserialize, Eq, PartialEq)]
 pub(crate) struct Configs {
     pub(super) port: u16,
     pub(super) udp: HashSet<Forwarders>,
@@ -66,14 +66,14 @@ pub(crate) struct Configs {
 }
 
 /// Forwarder configuration structure
-#[derive(Debug, Deserialize, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Deserialize, Eq, PartialEq, Hash)]
 pub(super) struct Forwarders {
     pub(super) upstream_ip: Ipv4Addr,
     pub(super) upstream_port: u16,
     pub(super) orig_port: u16,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub(crate) struct RuntimeConfigs {
     pub(crate) port: u16,
     pub(crate) udp_map: Arc<UdpMap>,

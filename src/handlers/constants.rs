@@ -10,7 +10,7 @@ pub(super) const BUFFER_SIZE: usize = 4096;
 pub(super) const DRAIN_DURATION: Duration = Duration::from_secs(5u64);
 
 /// Proxy listen IP - `127.0.0.2`
-pub(crate) const LISTEN_IP: Ipv4Addr = Ipv4Addr::new(127u8, 0u8, 0u8, 2u8);
+pub(crate) const LISTEN_IP: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 2);
 
 /// TCP connection backlog and UDP semaphore size
 pub(super) const CONN_BACKLOG: u32 = 100;

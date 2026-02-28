@@ -19,25 +19,24 @@ use std::{
 use tokio::fs::read_to_string;
 
 use super::{
-    bindings::__user_cap_data_struct,
+    cap_bindings::{__user_cap_data_struct, cap_to_index, cap_to_mask},
     constants::{CAP_HEADER, LOG_FILE_NAME, REQUIRED_CAPS},
     structs::{Configs, LogError},
 };
 
 /// Checks if required capabilities are effective
+///
+/// * A total of 64 capabilities are there
+/// * Each field of each [`__user_cap_data_struct`] holds 32 of them as u32 bitmap (Hence, two are used)
+/// * When enabled, the corresponding bit in that field is 1
+/// * Here we are using [`__user_cap_data_struct::effective`] for our purpose
 pub(crate) fn is_capable() -> IoResult<bool> {
-    // A total of 64 capabilities are there
-    // Each field of each __user_cap_data_struct holds 32 of them as u32 bitmap (Hence, two are used)
-    // When enabled, the corresponding bit in that field is 1
     let mut data = <[__user_cap_data_struct; 2] as Default>::default();
 
     match unsafe { syscall(SYS_capget, &*CAP_HEADER as *const _, &mut data as *mut _) } {
-        0 => Ok(REQUIRED_CAPS.iter().all(|&cap| {
-            let idx = (cap >> 5u32) as usize; // The __user_cap_data_struct which has this capability (cap / 32)
-            let bit = cap & 31u32; // The corresponding bit in bitmap for that capability (cap % 32)
-
-            (data[idx].effective & (1u32 << bit)) != 0 // Check if the capability bit is 1 in the effective field of that __user_cap_data_struct
-        })),
+        0 => Ok(REQUIRED_CAPS
+            .iter()
+            .all(|&cap| (data[cap_to_index(cap)].effective & cap_to_mask(cap)) != 0)),
         _ => Err(Error::last_os_error()),
     }
 }
