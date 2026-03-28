@@ -13,7 +13,6 @@ use log4rs::{
 use serde_json::from_str;
 use std::{
     io::{Error, ErrorKind, Result as IoResult},
-    os::unix::fs::PermissionsExt,
     path::PathBuf,
 };
 use tokio::fs::read_to_string;
@@ -36,7 +35,7 @@ pub(crate) fn is_capable() -> IoResult<bool> {
     match unsafe { syscall(SYS_capget, &*CAP_HEADER as *const _, &mut data as *mut _) } {
         0 => Ok(REQUIRED_CAPS
             .iter()
-            .all(|&cap| (data[cap_to_index(cap)].effective & cap_to_mask(cap)) != 0)),
+            .all(|&cap| (data[cap_to_index!(cap)].effective & cap_to_mask!(cap)) != 0)),
         _ => Err(Error::last_os_error()),
     }
 }
@@ -56,17 +55,13 @@ pub(crate) async fn read_config(path: &PathBuf) -> IoResult<Configs> {
 pub(crate) fn enable_logging(log_dir: Option<&PathBuf>) -> Result<Handle, LogError> {
     let config = match log_dir {
         Some(dir) => {
-            if !dir.exists() {
-                return Err(LogError::cause("Log directory not found"));
-            } else if !dir.is_dir() {
-                return Err(LogError::cause("Provided log directory is not a directory"));
-            }
-
             let metadata = dir
                 .metadata()
-                .map_err(|_| LogError::cause("Failed to fetch log directory metadata"))?;
-            let readonly = metadata.permissions().mode() & 0o200 == 0;
-            if readonly {
+                .map_err(|_| LogError::cause("Log directory not found"))?;
+
+            if !metadata.is_dir() {
+                return Err(LogError::cause("Provided log directory is not a directory"));
+            } else if metadata.permissions().readonly() {
                 return Err(LogError::cause("Provided log directory is readonly for the user"));
             }
 
@@ -85,7 +80,9 @@ pub(crate) fn enable_logging(log_dir: Option<&PathBuf>) -> Result<Handle, LogErr
                 .map_err(|_| LogError::cause("Failed to create FileAppender log config"))?
         },
         None => {
-            let console = ConsoleAppender::builder().build();
+            let console = ConsoleAppender::builder()
+                .encoder(Box::new(PatternEncoder::default()))
+                .build();
 
             Config::builder()
                 .appender(

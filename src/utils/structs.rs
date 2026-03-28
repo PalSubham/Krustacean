@@ -2,13 +2,7 @@
 
 use serde::Deserialize;
 use std::{
-    collections::{HashMap, HashSet},
-    env::{self, VarError},
-    error::Error,
-    fmt,
-    net::Ipv4Addr,
-    path::PathBuf,
-    sync::Arc,
+    collections::{HashMap, HashSet}, env::{self, VarError}, error::Error, fmt, net::Ipv4Addr, ops::Deref, path::PathBuf, sync::Arc
 };
 
 use super::constants::CONFIG_FILE_NAME;
@@ -100,25 +94,25 @@ impl From<&Configs> for RuntimeConfigs {
     }
 }
 
-pub(crate) trait ForwarderMap {
-    fn get(&self, k: &u16) -> Option<&(Ipv4Addr, u16)>;
-}
-
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct TcpMap(HashMap<u16, (Ipv4Addr, u16)>);
 
-impl ForwarderMap for TcpMap {
-    fn get(&self, k: &u16) -> Option<&(Ipv4Addr, u16)> {
-        self.0.get(k)
+impl Deref for TcpMap {
+    type Target = HashMap<u16, (Ipv4Addr, u16)>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct UdpMap(HashMap<u16, (Ipv4Addr, u16)>);
 
-impl ForwarderMap for UdpMap {
-    fn get(&self, k: &u16) -> Option<&(Ipv4Addr, u16)> {
-        self.0.get(k)
+impl Deref for UdpMap {
+    type Target = HashMap<u16, (Ipv4Addr, u16)>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
