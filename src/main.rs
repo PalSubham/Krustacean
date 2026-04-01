@@ -18,11 +18,7 @@ mod handlers;
 mod utils;
 
 use crate::{
-    handlers::{
-        constants::LISTEN_IP,
-        forwarders::{tcp_forwarder, udp_forwarder},
-        signal_handler::signal_handler,
-    },
+    handlers::{constants::LISTEN_IP, signal_handler::signal_handler, tcp_forwarder::tcp_forwarder, udp_forwarder::udp_forwarder},
     utils::{
         structs::{Actions, Args, RuntimeConfigs},
         utils::{banner, enable_logging, is_capable, read_config},

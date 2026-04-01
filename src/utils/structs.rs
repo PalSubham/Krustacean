@@ -2,14 +2,21 @@
 
 use serde::Deserialize;
 use std::{
-    collections::{HashMap, HashSet}, env::{self, VarError}, error::Error, fmt, net::Ipv4Addr, ops::Deref, path::PathBuf, sync::Arc
+    collections::{HashMap, HashSet},
+    env::{self, VarError},
+    error::Error,
+    fmt,
+    net::Ipv4Addr,
+    ops::Deref,
+    path::PathBuf,
+    sync::Arc,
 };
 
 use super::constants::CONFIG_FILE_NAME;
 
 /// Logging error structure
 #[derive(Debug)]
-pub(crate) struct LogError {
+pub(in super::super) struct LogError {
     pub(self) details: String,
 }
 
@@ -28,13 +35,13 @@ impl fmt::Display for LogError {
 impl Error for LogError {}
 
 /// Env variable arguments structure
-pub(crate) struct Args {
-    pub(crate) config_file: PathBuf,
-    pub(crate) log_dir: Option<PathBuf>,
+pub(in super::super) struct Args {
+    pub(in super::super) config_file: PathBuf,
+    pub(in super::super) log_dir: Option<PathBuf>,
 }
 
 impl Args {
-    pub(crate) fn new() -> Result<Self, String> {
+    pub(in super::super) fn new() -> Result<Self, String> {
         let config_file = match env::var("CONFIGURATION_DIRECTORY") {
             Ok(f) => PathBuf::from(f).join(CONFIG_FILE_NAME),
             Err(VarError::NotPresent) => return Err("Env variable \"CONFIGURATION_DIRECTORY\" not found".into()),
@@ -53,7 +60,7 @@ impl Args {
 
 /// Application configuration structure
 #[derive(Debug, Deserialize, Eq, PartialEq)]
-pub(crate) struct Configs {
+pub(in super::super) struct Configs {
     pub(super) port: u16,
     pub(super) udp: HashSet<Forwarders>,
     pub(super) tcp: HashSet<Forwarders>,
@@ -68,10 +75,10 @@ pub(super) struct Forwarders {
 }
 
 #[derive(PartialEq, Eq)]
-pub(crate) struct RuntimeConfigs {
-    pub(crate) port: u16,
-    pub(crate) udp_map: Arc<UdpMap>,
-    pub(crate) tcp_map: Arc<TcpMap>,
+pub(in super::super) struct RuntimeConfigs {
+    pub(in super::super) port: u16,
+    pub(in super::super) udp_map: Arc<UdpMap>,
+    pub(in super::super) tcp_map: Arc<TcpMap>,
 }
 
 impl From<&Configs> for RuntimeConfigs {
@@ -95,7 +102,7 @@ impl From<&Configs> for RuntimeConfigs {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct TcpMap(HashMap<u16, (Ipv4Addr, u16)>);
+pub(in super::super) struct TcpMap(HashMap<u16, (Ipv4Addr, u16)>);
 
 impl Deref for TcpMap {
     type Target = HashMap<u16, (Ipv4Addr, u16)>;
@@ -106,7 +113,7 @@ impl Deref for TcpMap {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct UdpMap(HashMap<u16, (Ipv4Addr, u16)>);
+pub(in super::super) struct UdpMap(HashMap<u16, (Ipv4Addr, u16)>);
 
 impl Deref for UdpMap {
     type Target = HashMap<u16, (Ipv4Addr, u16)>;
@@ -117,7 +124,7 @@ impl Deref for UdpMap {
 }
 
 #[derive(Clone)]
-pub(crate) enum Actions {
+pub(in super::super) enum Actions {
     INIT,
     RELOAD(bool),
     KILL,
