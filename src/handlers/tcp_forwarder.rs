@@ -8,14 +8,14 @@ use tokio::{
     io::copy_bidirectional_with_sizes,
     net::{TcpListener, TcpStream},
     select,
-    sync::watch::Receiver,
+    sync::{Semaphore, TryAcquireError, watch::Receiver},
     task::JoinSet,
     time::timeout,
 };
 
 use super::{
     super::utils::structs::{Actions, RuntimeConfigs},
-    constants::{BUFFER_SIZE, CONN_BACKLOG, CONN_TIMEOUT, DRAIN_DURATION, LISTEN_IP},
+    constants::{BUFFER_SIZE, CONN_TIMEOUT, DRAIN_DURATION, LISTEN_IP, MAX_TASKS, TCP_CONN_BACKLOG},
 };
 
 /// TCP forwarder function
@@ -45,6 +45,7 @@ pub(in super::super) async fn tcp_forwarder(mut rx: Receiver<Actions>, current_c
     };
     let mut tasks = JoinSet::new();
     let mut force_kill = false;
+    let semaphore = Arc::new(Semaphore::new(MAX_TASKS));
 
     'tcp_forwarder_loop: loop {
         select! {
@@ -102,48 +103,64 @@ pub(in super::super) async fn tcp_forwarder(mut rx: Receiver<Actions>, current_c
             result = listener.accept() => {
                 match result {
                     Ok((mut client, src)) => {
-                        let tcp_map = tcp_map.clone();
+                        match semaphore.clone().try_acquire_owned() {
+                            Ok(p) => {
+                                let _ = client.set_nodelay(true);  // Try disabling Nagle's algo
+                                let _ = client.set_quickack(true); // Eagerly send ACK
+                                let tcp_map = tcp_map.clone();
 
-                        tasks.spawn(async move {
-                            let orig_dst = SockRef::from(&client).original_dst_v4().map(|o| o.as_socket_ipv4());
+                                tasks.spawn(async move {
+                                    let _permit = p; // hold acquired permit
+                                    let orig_dst = SockRef::from(&client).original_dst_v4().map(|o| o.as_socket_ipv4());
 
-                            match orig_dst {
-                                Ok(Some(orig)) => {
-                                    let orig_dst_addr = orig.ip();
-                                    let orig_dst_port = orig.port();
-                                    debug!("TCP intercepted for {}:{} from {}", orig_dst_addr, orig_dst_port, src);
+                                    match orig_dst {
+                                        Ok(Some(orig)) => {
+                                            debug!("TCP intercepted for {orig} from {src}");
 
-                                    match tcp_map.get(&orig_dst_port) {
-                                        Some(proxy) => {
-                                            match timeout(CONN_TIMEOUT, TcpStream::connect(proxy)).await {
-                                                Ok(Ok(mut upstream_conn)) => {
-                                                    match copy_bidirectional_with_sizes(&mut client, &mut upstream_conn, BUFFER_SIZE, BUFFER_SIZE).await {
-                                                        Ok((from_client, from_upstream)) => {
-                                                            debug!("TCP session completed: {from_client} bytes from client, {from_upstream} bytes from upstream");
+                                            match tcp_map.get(&orig.port()) {
+                                                Some(upstream) => {
+                                                    match timeout(CONN_TIMEOUT, TcpStream::connect(upstream)).await {
+                                                        Ok(Ok(mut upstream_conn)) => {
+                                                            let _ = upstream_conn.set_nodelay(true);  // Try disabling Nagle's algo
+                                                            let _ = upstream_conn.set_quickack(true); // Eagerly send ACK
+
+                                                            match copy_bidirectional_with_sizes(&mut client, &mut upstream_conn, BUFFER_SIZE, BUFFER_SIZE).await {
+                                                                Ok((from_client, from_upstream)) => {
+                                                                    debug!("TCP session completed: {from_client} bytes from client {src}, {from_upstream} bytes from upstream {upstream}");
+                                                                },
+                                                                Err(e) => {
+                                                                    error!("TCP forwarding error between client {src} and upstream {upstream} - {e}");
+                                                                },
+                                                            };
                                                         },
-                                                        Err(e) => {
-                                                            error!("TCP forwarding error between client {} and upstream {}:{} - {e}", src, proxy.0, proxy.1);
+                                                        Ok(Err(e)) => {
+                                                            error!("Failed to connect to upstream {upstream} - {e}");
                                                         },
+                                                        Err(_) => {
+                                                            error!("Timed out while trying to connect to upstream {upstream}");
+                                                        }
                                                     };
                                                 },
-                                                Ok(Err(e)) => {
-                                                    error!("Failed to connect to upstream {}:{} - {e}", proxy.0, proxy.1);
-                                                },
-                                                Err(_) => {
-                                                    error!("Timed out while trying to connect to upstream {}:{}", proxy.0, proxy.1);
+                                                None => {
+                                                    warn!("No upstream mapping found for destination TCP port {}", orig.port());
                                                 }
                                             };
                                         },
-                                        None => {
-                                            warn!("No upstream mapping found for destination TCP port {}", orig_dst_port);
+                                        _ => {
+                                            error!("Failed to get original destination for TCP connection from {src}");
                                         }
                                     };
+                                });
+                            },
+                            Err(e) => match e {
+                                TryAcquireError::Closed => {
+                                    error!("TCP forwarder semaphore is closed");
                                 },
-                                _ => {
-                                    error!("Failed to get original destination for TCP connection from {}", src);
+                                TryAcquireError::NoPermits => {
+                                    warn!("TCP forwarder is at max...");
                                 }
-                            };
-                        });
+                            }
+                        };
                     },
                     Err(e) => {
                         error!("Error accepting TCP connection - {e}");
@@ -179,6 +196,7 @@ fn create_tcp_listener(port: u16) -> io::Result<TcpListener> {
     socket.set_ip_transparent_v4(true)?;
     socket.set_nonblocking(true)?;
     socket.bind(&SocketAddrV4::new(LISTEN_IP, port).into())?;
-    socket.listen(CONN_BACKLOG as i32)?;
+    socket.listen(TCP_CONN_BACKLOG)?;
+    socket.set_keepalive(true)?;
     TcpListener::from_std(socket.into())
 }

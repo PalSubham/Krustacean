@@ -6,7 +6,7 @@ use std::{
     env::{self, VarError},
     error::Error,
     fmt,
-    net::Ipv4Addr,
+    net::{Ipv4Addr, SocketAddrV4},
     ops::Deref,
     path::PathBuf,
     sync::Arc,
@@ -88,13 +88,13 @@ impl From<&Configs> for RuntimeConfigs {
             udp_map: Arc::new(UdpMap(
                 cfg.udp
                     .iter()
-                    .map(|u| (u.orig_port, (u.upstream_ip, u.upstream_port)))
+                    .map(|u| (u.orig_port, SocketAddrV4::new(u.upstream_ip, u.upstream_port)))
                     .collect(),
             )),
             tcp_map: Arc::new(TcpMap(
                 cfg.tcp
                     .iter()
-                    .map(|u| (u.orig_port, (u.upstream_ip, u.upstream_port)))
+                    .map(|u| (u.orig_port, SocketAddrV4::new(u.upstream_ip, u.upstream_port)))
                     .collect(),
             )),
         }
@@ -102,10 +102,10 @@ impl From<&Configs> for RuntimeConfigs {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub(in super::super) struct TcpMap(HashMap<u16, (Ipv4Addr, u16)>);
+pub(in super::super) struct TcpMap(HashMap<u16, SocketAddrV4>);
 
 impl Deref for TcpMap {
-    type Target = HashMap<u16, (Ipv4Addr, u16)>;
+    type Target = HashMap<u16, SocketAddrV4>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -113,10 +113,10 @@ impl Deref for TcpMap {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub(in super::super) struct UdpMap(HashMap<u16, (Ipv4Addr, u16)>);
+pub(in super::super) struct UdpMap(HashMap<u16, SocketAddrV4>);
 
 impl Deref for UdpMap {
-    type Target = HashMap<u16, (Ipv4Addr, u16)>;
+    type Target = HashMap<u16, SocketAddrV4>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -214,23 +214,13 @@ mod tests {
 
         let runtime_configs = RuntimeConfigs::from(&configs);
         assert_eq!(outer_port, runtime_configs.port);
-        assert_eq!(HashMap::from([(inner_port, (ip, inner_port))]), runtime_configs.tcp_map.0);
-        assert_eq!(HashMap::from([(inner_port, (ip, inner_port))]), runtime_configs.udp_map.0);
-    }
-
-    #[test]
-    fn test_ForwarderMap_get() {
-        let ip = Ipv4Addr::from([10u8, 0u8, 0u8, 1u8]);
-        let port = 53u16;
-        let no_port = 123u16;
-        let map = HashMap::from([(port, (ip, port))]);
-
-        let tcp_map = TcpMap(map.clone());
-        assert_eq!(Some(&(ip, port)), tcp_map.get(&port));
-        assert_eq!(None, tcp_map.get(&no_port));
-
-        let udp_map = UdpMap(map.clone());
-        assert_eq!(Some(&(ip, port)), udp_map.get(&port));
-        assert_eq!(None, udp_map.get(&no_port));
+        assert_eq!(
+            HashMap::from([(inner_port, SocketAddrV4::new(ip, inner_port))]),
+            runtime_configs.tcp_map.0
+        );
+        assert_eq!(
+            HashMap::from([(inner_port, SocketAddrV4::new(ip, inner_port))]),
+            runtime_configs.udp_map.0
+        );
     }
 }

@@ -1,37 +1,39 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use arc_swap::ArcSwap;
+use bytes::{Bytes, BytesMut};
 use log::{debug, error, info, warn};
 use moka::{future::Cache, policy::EvictionPolicy};
+#[cfg(test)]
+use nix::sys::socket::getsockopt;
 use nix::{
     cmsg_space,
-    errno::Errno,
+    libc::{in_addr, in_pktinfo},
     sys::socket::{
-        ControlMessageOwned, MsgFlags, SockaddrIn, recvmsg, setsockopt, sockaddr_in,
-        sockopt::{Ipv4OrigDstAddr, Ipv4PacketInfo},
+        ControlMessage, ControlMessageOwned, MsgFlags, MultiHeaders, RecvMsg, SockaddrIn, recvmmsg, sendmsg, setsockopt, sockaddr_in,
+        sockopt::Ipv4OrigDstAddr,
     },
 };
 use socket2::{Domain, Protocol, Socket, Type};
 use std::{
-    error::Error,
-    ffi::{c_int, c_void},
-    fmt, io,
+    array, io,
     net::{Ipv4Addr, SocketAddrV4},
     os::fd::{AsFd, AsRawFd},
+    slice,
     sync::Arc,
 };
 use tokio::{
-    io::unix::AsyncFd,
+    io::{Interest, unix::AsyncFd},
     net::UdpSocket,
     select,
     sync::{Semaphore, TryAcquireError, watch::Receiver},
     task::JoinSet,
-    time::{Instant, timeout},
+    time::timeout,
 };
 
 use super::{
     super::utils::structs::{Actions, RuntimeConfigs},
-    constants::{BUFFER_SIZE, CONN_BACKLOG, CONN_TIMEOUT, DRAIN_DURATION, LISTEN_IP, UDP_REPLY_SOCKET_LIFE, UDP_UPSTREAM_SOCKET_LIFE},
+    constants::{BUFFER_SIZE, CONN_TIMEOUT, DRAIN_DURATION, LISTEN_IP, MAX_TASKS, UDP_BATCH_SIZE, UDP_REPLY_SOCKET_LIFE, UDP_UPSTREAM_SOCKET_LIFE},
 };
 
 /// UDP forwarder function
@@ -59,17 +61,17 @@ pub(in super::super) async fn udp_forwarder(mut rx: Receiver<Actions>, current_c
         let config = current_config.load();
         (config.udp_map.clone(), create_udp_socket_fd(config.port)?)
     };
-    let semaphore = Arc::new(Semaphore::new(CONN_BACKLOG as usize));
     let mut tasks = JoinSet::new();
     let mut force_kill = false;
-    let mut buf = [0u8; BUFFER_SIZE];
+    let mut buf = array::from_fn::<_, UDP_BATCH_SIZE, _>(|_| BytesMut::with_capacity(BUFFER_SIZE));
+    let semaphore = Arc::new(Semaphore::new(MAX_TASKS));
     let upstream_map = Cache::<(SocketAddrV4, SocketAddrV4), Arc<UdpSocket>>::builder()
         .name("udp_upstream_socket_map")
         .time_to_idle(UDP_UPSTREAM_SOCKET_LIFE)
         .max_capacity(1000)
         .eviction_policy(EvictionPolicy::tiny_lfu())
         .build();
-    let reply_map = Cache::<u16, Arc<UdpSocket>>::builder()
+    let reply_map = Cache::<u16, Arc<AsyncFd<Socket>>>::builder()
         .name("udp_reply_socket_map")
         .time_to_idle(UDP_REPLY_SOCKET_LIFE)
         .max_capacity(1000)
@@ -130,112 +132,142 @@ pub(in super::super) async fn udp_forwarder(mut rx: Receiver<Actions>, current_c
             }
 
             result = udp_fd.readable() => {
-                let mut guard = match result {
+                let mut read_guard = match result {
                     Ok(g) => g,
                     Err(e) => {
-                        error!("AsyncFd error: {e}");
+                        error!("AsyncFd error from listen socket: {e}");
                         continue 'udp_forwarder_loop;
                     }
                 };
 
-                'udp_forwarder_inner_loop: loop {
-                    let (src, len, orig_dst) = match recvfrom_cmsg(&udp_fd, &mut buf) {
-                        Ok(r) => r,
-                        Err(UdpRecvError::WouldBlock) => {
-                            guard.clear_ready();
-                            break 'udp_forwarder_inner_loop;
-                        },
-                        Err(_) => {
-                            break 'udp_forwarder_inner_loop;
-                        }
-                    };
+                'udp_forwarder_msg_loop: loop {
+                    match read_guard.try_io(|sock_fd| multi_recvfrom_cmsg(
+                        sock_fd,
+                        &mut buf,
+                        |packet, src, orig_dst| {
+                            match semaphore.clone().try_acquire_owned() {
+                                Ok(p) => {
+                                    let udp_map = udp_map.clone();
+                                    let upstream_map = upstream_map.clone();
+                                    let reply_map = reply_map.clone();
 
-                    match semaphore.clone().try_acquire_owned() {
-                        Ok(p) => {
-                            let packet = buf[..len].to_vec();
-                            let udp_map = udp_map.clone();
-                            let upstream_map = upstream_map.clone();
-                            let reply_map = reply_map.clone();
+                                    tasks.spawn(async move {
+                                        let _permit = p; // hold acquired permit
 
-                            tasks.spawn(async move {
-                                let _permit = p; // hold acquired permit
+                                        debug!("UDP intercepted for {orig_dst} from {src}");
 
-                                let orig_dst_addr = orig_dst.ip();
-                                let orig_dst_port = orig_dst.port();
-                                debug!("UDP intercepted for {orig_dst_addr}:{orig_dst_port} from {src}");
+                                        match udp_map.get(&orig_dst.port()) {
+                                            Some(upstream) => {
+                                                let upstream_sock = upstream_map.try_get_with(
+                                                    (src, *upstream),
+                                                    create_upstream_socket(upstream)
+                                                ).await;
+                                                let reply_sock = reply_map.try_get_with(
+                                                    orig_dst.port(),
+                                                    create_reply_socket_fd(orig_dst.port())
+                                                ).await;
 
-                                match udp_map.get(&orig_dst_port) {
-                                    Some(proxy) => {
-                                        let upstream_sock = upstream_map.try_get_with(
-                                            (src, orig_dst),
-                                            create_upstream_socket(&orig_dst)
-                                        ).await;
-                                        let reply_sock = upstream_map.try_get_with(
-                                            (src, orig_dst),
-                                            create_reply_socket(orig_dst_port)
-                                        ).await;
-                                        /* let flow = match flows.entry(flow_key(src, orig_dst)) {
-                                            Occupied(mut entry) => {
-                                                let state = entry.get_mut();
-                                                state.last_used = Instant::now();
-                                                state
-                                            },
-                                            Vacant(entry) => {
-                                                match (create_upstream_socket().await, create_reply_socket(orig_dst_addr, orig_dst_port)) {
-                                                    (Ok(upstream), Ok(reply)) => {
-                                                        let mut new_flow = entry.insert(UdpFlowState {
-                                                            upstream,
-                                                            reply,
-                                                            last_used: Instant::now()
-                                                        });
-                                                        new_flow.value_mut()
+                                                match (upstream_sock, reply_sock) {
+                                                    (Ok(us), Ok(rsfd)) => {
+                                                        if let Err(e) = us.send(&packet).await {
+                                                            error!("Failed to send UDP datagram to upstream {upstream} - {e}");
+                                                            return;
+                                                        } else {
+                                                            debug!("Send {} bytes data from {src} to upstream {upstream}", packet.len())
+                                                        }
+
+                                                        let mut reply_buf = [0u8; BUFFER_SIZE];
+                                                        match timeout(CONN_TIMEOUT, us.recv(&mut reply_buf)).await {
+                                                            Ok(Ok(reply_len)) => {
+                                                                'udp_forwarder_reply_loop: loop {
+                                                                    let mut write_guard = match rsfd.writable().await {
+                                                                        Ok(g) => g,
+                                                                        Err(e) => {
+                                                                            error!("AsyncFd error from reply socket from upstream {upstream} - {e}");
+                                                                            break 'udp_forwarder_reply_loop;
+                                                                        },
+                                                                    };
+
+                                                                    match write_guard.try_io(|inner| sendto_cmsg(
+                                                                        inner,
+                                                                        &reply_buf[..reply_len],
+                                                                        &src,
+                                                                        orig_dst.ip()
+                                                                    )) {
+                                                                        Ok(Ok(s)) => {
+                                                                            if s != reply_len {
+                                                                                error!("Failed to send the entire reply (unexpected!!!)");
+                                                                            } else {
+                                                                                debug!("Send {s} bytes reply from {upstream} back to client {src}");
+                                                                            }
+
+                                                                            break 'udp_forwarder_reply_loop;
+                                                                        },
+                                                                        Ok(Err(e)) if e.kind() == io::ErrorKind::Interrupted => {
+                                                                            continue 'udp_forwarder_reply_loop;
+                                                                        },
+                                                                        Ok(Err(e)) => {
+                                                                            error!("UDP reply send error: {e}");
+                                                                            break 'udp_forwarder_reply_loop;
+                                                                        }
+                                                                        Err(_would_block) => {
+                                                                            continue 'udp_forwarder_reply_loop;
+                                                                        },
+                                                                    };
+                                                                };
+                                                            },
+                                                            Ok(Err(e)) => {
+                                                                error!("Failed to receive UDP datagram from upstream {upstream} - {e}");
+                                                            },
+                                                            Err(_) => {
+                                                                error!("Timed out while trying to receive UDP datagram from upstream {upstream}");
+                                                            }
+                                                        };
                                                     },
-                                                    _ => {
-                                                        return;
+                                                    (Ok(_), Err(e)) => {
+                                                        error!("Error creating reply socket - {e}");
                                                     },
-                                                }
-                                            },
-                                        };
-
-                                        if let Err(e) = flow.upstream.send_to(&packet, proxy).await {
-                                            error!("Failed to send UDP datagram to upstream {}:{} - {e}", proxy.0, proxy.1);
-                                            return;
-                                        }
-
-                                        let mut reply_buf = [0u8; BUFFER_SIZE];
-                                        match timeout(CONN_TIMEOUT, flow.upstream.recv_from(&mut reply_buf)).await {
-                                            Ok(Ok((reply_len, _))) => {
-                                                match flow.reply.send_to(&reply_buf[..reply_len], src).await {
-                                                    Ok(_) => {
-                                                        debug!("UDP reply forwarded back to client {}", src);
+                                                    (Err(e), Ok(_)) => {
+                                                        error!("Error creating upstream socket - {e}");
                                                     },
-                                                    Err(e) => {
-                                                        error!("Failed to forward UDP reply back to client {} - {e}", src);
-                                                    }
+                                                    (Err(e1), Err(e2)) => {
+                                                        error!("Error creating upstream - {e1} & reply socket - {e2} ");
+                                                    },
                                                 };
                                             },
-                                            Ok(Err(e)) => {
-                                                error!("Failed to receive UDP datagram from upstream {}:{} - {e}", proxy.0, proxy.1);
-                                            },
-                                            Err(_) => {
-                                                error!("Timed out while trying to receive UDP datagram from upstream {}:{}", proxy.0, proxy.1);
+                                            None => {
+                                                warn!("No upstream mapping provided for destination UDP port {}", orig_dst.port());
                                             }
-                                        }; */
+                                        };
+                                    });
+                                },
+                                Err(e) => match e {
+                                    TryAcquireError::Closed => {
+                                        error!("UDP forwarder semaphore is closed");
                                     },
-                                    None => {
-                                        warn!("No upstream mapping provided for destination UDP port {orig_dst_port}");
+                                    TryAcquireError::NoPermits => {
+                                        warn!("UDP forwarder is at max...");
                                     }
-                                };
-                            });
+                                }
+                            };
                         },
-                        Err(e) => match e {
-                            TryAcquireError::Closed => {
-                                error!("UDP forwarder backlog semaphore is closed");
-                            },
-                            TryAcquireError::NoPermits => {
-                                warn!("UDP forwarder is busy, dropping packets...");
-                            }
+                        |e| {
+                            error!("UDP processing error: {e}");
                         }
+                    )) {
+                        Ok(Ok(r)) => {
+                            debug!("Processed {r}/{UDP_BATCH_SIZE} packets in this batch");
+                        },
+                        Ok(Err(e)) if e.kind() == io::ErrorKind::Interrupted => {
+                            continue 'udp_forwarder_msg_loop;
+                        },
+                        Ok(Err(e)) => {
+                            error!("UDP recv error: {e}");
+                            break 'udp_forwarder_msg_loop;
+                        }
+                        Err(_would_block) => {
+                            break 'udp_forwarder_msg_loop;
+                        },
                     };
                 };
             }
@@ -263,67 +295,112 @@ pub(in super::super) async fn udp_forwarder(mut rx: Receiver<Actions>, current_c
     Ok(())
 }
 
-#[derive(Debug)]
-enum UdpRecvError {
-    WouldBlock,
-    Invalid,
-}
+fn multi_recvfrom_cmsg<const N: usize, H, E>(sock: &AsyncFd<Socket>, buf: &mut [BytesMut; N], mut handler: H, error_handler: E) -> io::Result<usize>
+where
+    H: FnMut(Bytes, SocketAddrV4, SocketAddrV4),
+    E: Fn(io::Error),
+{
+    let mut meta = [None; N];
 
-impl fmt::Display for UdpRecvError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            UdpRecvError::WouldBlock => write!(f, "WouldBlock"),
-            UdpRecvError::Invalid => write!(f, "Invalid"),
+    let count = {
+        let mut iovs = array::from_fn::<_, N, _>(|_| [io::IoSliceMut::new(&mut [])]);
+        for (iov, b) in iovs.iter_mut().zip(buf.iter_mut()) {
+            // get uninitialized slice of the memory from BytesMut for write
+            let spare = b.spare_capacity_mut();
+            let ptr = spare.as_mut_ptr() as *mut _;
+            let len = spare.len();
+            let slice = unsafe { slice::from_raw_parts_mut(ptr, len) };
+
+            iov[0] = io::IoSliceMut::new(slice);
+        }
+
+        let cmsg_space = cmsg_space!(sockaddr_in);
+        let mut headers = MultiHeaders::<SockaddrIn>::preallocate(N, Some(cmsg_space));
+        let mut count = 0;
+
+        recvmmsg(sock.as_raw_fd(), &mut headers, &mut iovs, MsgFlags::MSG_DONTWAIT, None)?
+            .enumerate()
+            .for_each(|(i, msg)| {
+                match parse_msg(msg) {
+                    Ok((src, len, orig_dst)) => {
+                        meta[i] = Some((src, len, orig_dst));
+                    },
+                    Err(e) => {
+                        error_handler(e);
+                    },
+                };
+
+                count += 1;
+            });
+
+        count
+    };
+
+    for i in 0..count {
+        if let Some((src, len, orig_dst)) = meta[i] {
+            unsafe {
+                buf[i].set_len(len);
+            }
+            let cap = buf[i].capacity();
+            let packet = buf[i].split().freeze();
+            buf[i] = BytesMut::with_capacity(cap);
+
+            handler(packet, src, orig_dst);
         }
     }
+
+    Ok(count)
 }
 
-impl Error for UdpRecvError {}
-
-fn recvfrom_cmsg(sock: &AsyncFd<Socket>, buf: &mut [u8]) -> Result<(SocketAddrV4, usize, SocketAddrV4), UdpRecvError> {
-    let mut cmsg_buf = cmsg_space!(sockaddr_in);
-    let mut iov = [io::IoSliceMut::new(buf)];
-
-    match recvmsg::<SockaddrIn>(
-        sock.as_raw_fd(),
-        &mut iov,
-        Some(&mut cmsg_buf),
-        MsgFlags::MSG_DONTWAIT | MsgFlags::MSG_TRUNC,
-    ) {
-        Ok(msg) => {
-            let src = msg
-                .address
-                .map(SocketAddrV4::from)
-                .ok_or(UdpRecvError::Invalid)?;
-
-            let orig_dst = msg
-                .cmsgs()
-                .ok()
-                .and_then(|mut cmsgs| {
-                    cmsgs.find_map(|cmsg| match cmsg {
-                        ControlMessageOwned::Ipv4OrigDstAddr(addr) => Some(SocketAddrV4::from(SockaddrIn::from(addr))),
-                        _ => None,
-                    })
-                })
-                .ok_or(UdpRecvError::Invalid)?;
-
-            Ok((src, msg.bytes, orig_dst))
-        },
-        Err(Errno::EWOULDBLOCK) => Err(UdpRecvError::WouldBlock),
-        Err(e) => {
-            error!("recvmsg failed: {e}");
-            Err(UdpRecvError::Invalid)
-        },
+#[inline(always)]
+fn parse_msg<'a, 's>(msg: RecvMsg<'a, 's, SockaddrIn>) -> io::Result<(SocketAddrV4, usize, SocketAddrV4)> {
+    if msg.flags.contains(MsgFlags::MSG_CTRUNC) {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "control message truncated"));
     }
+
+    if msg.flags.contains(MsgFlags::MSG_TRUNC) {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "data truncated"));
+    }
+
+    let src = msg
+        .address
+        .map(SocketAddrV4::from)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing src addr"))?;
+
+    let mut cmsgs = msg
+        .cmsgs()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid cmsg"))?;
+
+    let orig_dst = cmsgs
+        .find_map(|cmsg| match cmsg {
+            ControlMessageOwned::Ipv4OrigDstAddr(addr) => Some(SocketAddrV4::from(SockaddrIn::from(addr))),
+            _ => None,
+        })
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing orig dst"))?;
+
+    Ok((src, msg.bytes, orig_dst))
+}
+
+fn sendto_cmsg(sock: &AsyncFd<Socket>, buf: &[u8], client: &SocketAddrV4, orig_dst_ip: &Ipv4Addr) -> io::Result<usize> {
+    let iov = [io::IoSlice::new(buf)];
+    let cmsg = ControlMessage::Ipv4PacketInfo(&in_pktinfo {
+        ipi_ifindex: 0,
+        ipi_spec_dst: in_addr {
+            s_addr: u32::from_ne_bytes(orig_dst_ip.octets()),
+        },
+        ipi_addr: in_addr { s_addr: 0 },
+    });
+
+    sendmsg(sock.as_raw_fd(), &iov, &[cmsg], MsgFlags::MSG_DONTWAIT, Some(&SockaddrIn::from(*client))).map_err(|e| io::Error::from(e))
 }
 
 fn create_udp_socket_fd(port: u16) -> io::Result<AsyncFd<Socket>> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_ip_transparent_v4(true)?;
-    socket.set_recv_orig_dst_addr(true)?;
+    socket.set_orig_dst_addr(true)?;
     socket.set_nonblocking(true)?;
     socket.bind(&SocketAddrV4::new(LISTEN_IP, port).into())?;
-    AsyncFd::new(socket)
+    AsyncFd::with_interest(socket, Interest::READABLE)
 }
 
 async fn create_upstream_socket(upstream: &SocketAddrV4) -> io::Result<Arc<UdpSocket>> {
@@ -332,23 +409,24 @@ async fn create_upstream_socket(upstream: &SocketAddrV4) -> io::Result<Arc<UdpSo
     Ok(Arc::new(s))
 }
 
-async fn create_reply_socket(orig_dst_port: u16) -> io::Result<Arc<UdpSocket>> {
+async fn create_reply_socket_fd(orig_dst_port: u16) -> io::Result<Arc<AsyncFd<Socket>>> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_reuse_address(true)?;
     socket.set_reuse_port(true)?;
     socket.set_ip_transparent_v4(true)?;
     socket.set_nonblocking(true)?;
     socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, orig_dst_port).into())?;
-    Ok(Arc::new(UdpSocket::from_std(socket.into())?))
+    Ok(Arc::new(AsyncFd::with_interest(socket, Interest::WRITABLE)?))
 }
 
 trait ExtendedUdpSocket: AsFd {
-    fn set_recv_orig_dst_addr(&self, recv: bool) -> io::Result<()> {
-        setsockopt(&self.as_fd(), Ipv4OrigDstAddr, &recv).map_err(|e| io::Error::from_raw_os_error(e as i32))
+    fn set_orig_dst_addr(&self, dst: bool) -> io::Result<()> {
+        setsockopt(&self.as_fd(), Ipv4OrigDstAddr, &dst).map_err(|e| e.into())
     }
 
-    fn set_pass_ip_pkt_info(&self, pass: bool) -> io::Result<()> {
-        setsockopt(&self.as_fd(), Ipv4PacketInfo, &pass).map_err(|e| io::Error::from_raw_os_error(e as i32))
+    #[cfg(test)]
+    fn get_orig_dst_addr(&self) -> io::Result<bool> {
+        getsockopt(&self.as_fd(), Ipv4OrigDstAddr).map_err(|e| e.into())
     }
 }
 
@@ -357,107 +435,166 @@ impl ExtendedUdpSocket for Socket {}
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 mod tests {
+    use std::net::SocketAddr;
+
+    use crate::handlers::udp_forwarder::sendto_cmsg;
+
     use super::*;
 
     #[tokio::test]
-    async fn test_recvfrom_cmsg() {
-        let mut buf = [0u8; 128];
+    async fn test_multi_recvfrom_cmsg() {
+        let mut buf = array::from_fn::<_, 2, _>(|_| BytesMut::with_capacity(8));
         let payload = b"payload";
 
         // OK
-        let sock1 = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
-        sock1.set_recv_orig_dst_addr(true).unwrap();
-        sock1.set_nonblocking(true).unwrap();
-        sock1
-            .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0u16).into())
+        {
+            let recv_sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
+            recv_sock.set_orig_dst_addr(true).unwrap();
+            recv_sock.set_nonblocking(true).unwrap();
+            recv_sock
+                .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0u16).into())
+                .unwrap();
+
+            let recv_addr = recv_sock.local_addr().unwrap().as_socket_ipv4().unwrap();
+            let recv_fd = AsyncFd::new(recv_sock).unwrap();
+
+            let send_sock = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0u16)).await.unwrap();
+            let size = send_sock.send_to(payload, &recv_addr).await.unwrap();
+            assert_eq!(size, payload.len());
+
+            let _ = recv_fd.readable().await.unwrap();
+            let res = multi_recvfrom_cmsg(
+                &recv_fd,
+                &mut buf,
+                |p, src, orig_dst| {
+                    assert_eq!(p.len(), payload.len());
+                    assert_eq!(*p, *payload);
+                    assert_eq!(orig_dst.ip(), recv_addr.ip());
+                    assert_eq!(orig_dst.port(), recv_addr.port());
+                    assert_eq!(src.ip(), &Ipv4Addr::LOCALHOST);
+                },
+                |_| {
+                    unreachable!();
+                },
+            )
             .unwrap();
+            assert_eq!(1, res);
+        }
 
-        let local_addr1 = sock1.local_addr().unwrap().as_socket_ipv4().unwrap();
-        let fd1: AsyncFd<Socket> = AsyncFd::new(sock1).unwrap();
-        let send_sock1 = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0u16)).await.unwrap();
+        // WouldBlock
+        {
+            let recv_sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
+            recv_sock.set_orig_dst_addr(true).unwrap();
+            recv_sock.set_nonblocking(true).unwrap();
+            recv_sock
+                .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0u16).into())
+                .unwrap();
 
-        let size1 = send_sock1.send_to(payload, &local_addr1).await.unwrap();
-        assert_eq!(size1, payload.len());
-
-        let _ = fd1.readable().await.unwrap();
-        let res1 = recvfrom_cmsg(&fd1, &mut buf);
-        assert!(res1.is_ok());
-
-        let (src, len, orig_dst) = res1.unwrap();
-        assert_eq!(len, payload.len());
-        assert_eq!(&buf[..len], payload);
-        assert_eq!(orig_dst.ip(), local_addr1.ip());
-        assert_eq!(orig_dst.port(), local_addr1.port());
-        assert_eq!(src.ip(), &Ipv4Addr::LOCALHOST);
-
-        // EWOULDBLOCK
-        let sock2 = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
-        sock2.set_recv_orig_dst_addr(true).unwrap();
-        sock2.set_nonblocking(true).unwrap();
-        sock2
-            .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0u16).into())
-            .unwrap();
-
-        let fd2 = AsyncFd::new(sock2).unwrap();
-        let res2 = recvfrom_cmsg(&fd2, &mut buf);
-        assert!(res2.is_err());
+            let recv_fd = AsyncFd::new(recv_sock).unwrap();
+            let res = multi_recvfrom_cmsg(
+                &recv_fd,
+                &mut buf,
+                |_, _, _| {
+                    unreachable!();
+                },
+                |_| {
+                    unreachable!();
+                },
+            );
+            assert!(res.is_err());
+        }
 
         // No RECVORIGDSTADDR
-        let sock3 = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
-        sock3.set_nonblocking(true).unwrap();
-        sock3
-            .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0u16).into())
+        {
+            let recv_sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
+            recv_sock.set_nonblocking(true).unwrap();
+            recv_sock
+                .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0u16).into())
+                .unwrap();
+
+            let recv_addr = recv_sock.local_addr().unwrap().as_socket_ipv4().unwrap();
+            let recv_fd = AsyncFd::new(recv_sock).unwrap();
+            let send_sock = UdpSocket::bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0u16))
+                .await
+                .unwrap();
+
+            let size = send_sock.send_to(payload, &recv_addr).await.unwrap();
+            assert_eq!(size, payload.len());
+
+            let _ = recv_fd.readable().await.unwrap();
+            let res = multi_recvfrom_cmsg(
+                &recv_fd,
+                &mut buf,
+                |_, _, _| {
+                    unreachable!();
+                },
+                |e| {
+                    assert_eq!(io::ErrorKind::InvalidData, e.kind());
+                },
+            )
             .unwrap();
-
-        let local_addr2 = sock3.local_addr().unwrap().as_socket_ipv4().unwrap();
-        let fd3 = AsyncFd::new(sock3).unwrap();
-        let send_sock2 = UdpSocket::bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0u16))
-            .await
-            .unwrap();
-
-        let size2 = send_sock2.send_to(payload, &local_addr2).await.unwrap();
-        assert_eq!(size2, payload.len());
-
-        let _ = fd3.readable().await.unwrap();
-        let res3 = recvfrom_cmsg(&fd3, &mut buf);
-        assert!(res3.is_err());
+            assert_eq!(1, res);
+        }
     }
 
-    /*#[test]
-    fn test_set_recv_orig_dst_addr() {
-        let mut value = 0 as c_int;
-        let mut len = size_of::<c_int>() as socklen_t;
+    #[tokio::test]
+    async fn test_sendto_cmsg() {
+        let payload = b"payload";
 
-        // set
-        let sock1 = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
-        sock1.set_recv_orig_dst_addr(true).unwrap();
-
-        let rc1 = unsafe {
-            getsockopt(
-                sock1.as_raw_fd(),
-                IPPROTO_IP,
-                IP_RECVORIGDSTADDR,
-                &mut value as *mut _ as *mut c_void,
-                &mut len,
-            )
+        let recv_sock = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0u16)).await.unwrap();
+        let recv_addr = match recv_sock.local_addr().unwrap() {
+            SocketAddr::V4(socket_addr_v4) => socket_addr_v4,
+            _ => unreachable!(),
         };
-        assert_eq!(0, rc1);
-        assert_eq!(1, value);
+
+        let send_sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
+        send_sock
+            .bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0u16).into())
+            .unwrap();
+        let send_fd = AsyncFd::new(send_sock).unwrap();
+        let send_src_ip = Ipv4Addr::new(127, 0, 0, 3);
+
+        let _ = send_fd.writable().await.unwrap();
+        let res = sendto_cmsg(&send_fd, payload, &recv_addr, &send_src_ip).unwrap();
+        assert_eq!(payload.len(), res);
+
+        let mut buf = [0u8; 7];
+        let (size, addr) = recv_sock
+            .recv_from(&mut buf)
+            .await
+            .map(|(s, a)| {
+                (
+                    s,
+                    match a {
+                        SocketAddr::V4(socket_addr_v4) => socket_addr_v4,
+                        _ => unreachable!(),
+                    },
+                )
+            })
+            .unwrap();
+        assert_eq!(*payload, buf);
+        assert_eq!(payload.len(), size);
+        assert_eq!(send_src_ip, *addr.ip());
+    }
+
+    #[test]
+    fn test_orig_dst_addr() {
+        // set
+        {
+            let sock1 = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
+            sock1.set_orig_dst_addr(true).unwrap();
+
+            let r1 = sock1.get_orig_dst_addr().unwrap();
+            assert_eq!(true, r1);
+        }
 
         // not set
-        let sock2 = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
-        sock2.set_recv_orig_dst_addr(false).unwrap();
+        {
+            let sock2 = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
+            sock2.set_orig_dst_addr(false).unwrap();
 
-        let rc2 = unsafe {
-            getsockopt(
-                sock2.as_raw_fd(),
-                IPPROTO_IP,
-                IP_RECVORIGDSTADDR,
-                &mut value as *mut _ as *mut c_void,
-                &mut len,
-            )
-        };
-        assert_eq!(0, rc2);
-        assert_eq!(0, value);
-    }*/
+            let r2 = sock2.get_orig_dst_addr().unwrap();
+            assert_eq!(false, r2);
+        }
+    }
 }
