@@ -1,3 +1,3 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <linux/capability.h>
+#include <sys/capability.h>

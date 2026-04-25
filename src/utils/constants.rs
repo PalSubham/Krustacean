@@ -1,14 +1,6 @@
-use std::{process, sync::LazyLock};
-
 use const_format::concatcp;
 
-use super::cap_bindings::{__user_cap_header_struct, CAP_NET_ADMIN, CAP_NET_BIND_SERVICE};
-
-/// Current PID
-pub(in super::super) static PID: LazyLock<u32> = LazyLock::new(process::id);
-
-/// Metadata header [`__user_cap_header_struct`] to fetch process capabilities
-pub(super) static CAP_HEADER: LazyLock<__user_cap_header_struct> = LazyLock::new(Default::default);
+use super::cap_bindings::{CAP_NET_ADMIN, CAP_NET_BIND_SERVICE};
 
 /// Required process capabilities
 pub(super) const REQUIRED_CAPS: [u32; 2] = [CAP_NET_ADMIN, CAP_NET_BIND_SERVICE];

@@ -9,32 +9,19 @@ use log4rs::{
     filter::threshold::ThresholdFilter,
     init_config,
 };
-use nix::libc::{SYS_capget, syscall};
 use serde_json::from_str;
 use std::{io, path::PathBuf};
 use tokio::fs::read_to_string;
 
 use super::{
-    cap_bindings::{__user_cap_data_struct, cap_to_index, cap_to_mask},
-    constants::{CAP_HEADER, LOG_FILE_NAME, REQUIRED_CAPS},
+    cap_bindings::{CapFlag, check_cap},
+    constants::{LOG_FILE_NAME, REQUIRED_CAPS},
     structs::{Configs, LogError},
 };
 
 /// Checks if required capabilities are effective
-///
-/// * A total of 64 capabilities are there
-/// * Each field of each [`__user_cap_data_struct`] holds 32 of them as u32 bitmap (Hence, two are used)
-/// * When enabled, the corresponding bit in that field is 1
-/// * Here we are using [`__user_cap_data_struct::effective`] for our purpose
 pub(in super::super) fn is_capable() -> io::Result<bool> {
-    let mut data = <[__user_cap_data_struct; 2] as Default>::default();
-
-    match unsafe { syscall(SYS_capget, &*CAP_HEADER as *const _, &mut data as *mut _) } {
-        0 => Ok(REQUIRED_CAPS
-            .iter()
-            .all(|&cap| (data[cap_to_index!(cap)].effective & cap_to_mask!(cap)) != 0)),
-        _ => Err(io::Error::last_os_error()),
-    }
+    check_cap(&REQUIRED_CAPS, CapFlag::CAP_EFFECTIVE)
 }
 
 /// Read and parse configuration file
@@ -74,7 +61,7 @@ pub(in super::super) fn enable_logging(log_dir: Option<&PathBuf>) -> Result<Hand
                         .filter(Box::new(ThresholdFilter::new(LevelFilter::Info)))
                         .build("file", Box::new(file)),
                 )
-                .build(Root::builder().appender("file").build(LevelFilter::max()))
+                .build(Root::builder().appender("file").build(LevelFilter::Info))
                 .map_err(|_| LogError::cause("Failed to create FileAppender log config"))?
         },
         None => {
@@ -85,13 +72,13 @@ pub(in super::super) fn enable_logging(log_dir: Option<&PathBuf>) -> Result<Hand
             Config::builder()
                 .appender(
                     Appender::builder()
-                        .filter(Box::new(ThresholdFilter::new(LevelFilter::Info)))
+                        .filter(Box::new(ThresholdFilter::new(LevelFilter::Debug)))
                         .build("console", Box::new(console)),
                 )
                 .build(
                     Root::builder()
                         .appender("console")
-                        .build(LevelFilter::max()),
+                        .build(LevelFilter::Debug),
                 )
                 .map_err(|_| LogError::cause("Failed to create ConsoleAppender log config"))?
         },
@@ -105,7 +92,7 @@ macro_rules! banner {
     ($file:literal) => {
         #[cfg(not(test))]
         {
-            let pid_string = (*$crate::utils::constants::PID).to_string();
+            let pid_string = ::std::process::id().to_string();
             let banner = ::const_format::str_replace!(::std::include_str!($file), "@project_version@", ::std::env!("CARGO_PKG_VERSION"))
                 .replace("@pid@", &pid_string);
             ::log::info!("{banner}");

@@ -28,18 +28,17 @@ use crate::{
 #[cfg(target_os = "linux")]
 #[tokio::main]
 async fn main() -> ExitCode {
-    let capable = match is_capable() {
-        Ok(c) => c,
+    match is_capable() {
+        Ok(c) if !c => {
+            eprintln!("Both CAP_NET_ADMIN & CAP_NET_BIND_SERVICE need to be effective");
+            return ExitCode::FAILURE;
+        },
+        Ok(_) => { /* Ok, proceed */ },
         Err(e) => {
             eprintln!("{e}");
             return ExitCode::FAILURE;
         },
     };
-
-    if !capable {
-        eprintln!("Both CAP_NET_ADMIN & CAP_NET_BIND_SERVICE need to be effective");
-        return ExitCode::FAILURE;
-    }
 
     let args = match Args::new() {
         Ok(a) => a,
