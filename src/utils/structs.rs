@@ -6,7 +6,8 @@ use std::{
     env::{self, VarError},
     error::Error,
     fmt,
-    net::Ipv4Addr,
+    net::{Ipv4Addr, SocketAddrV4},
+    ops::Deref,
     path::PathBuf,
     sync::Arc,
 };
@@ -15,7 +16,7 @@ use super::constants::CONFIG_FILE_NAME;
 
 /// Logging error structure
 #[derive(Debug)]
-pub(crate) struct LogError {
+pub(in super::super) struct LogError {
     pub(self) details: String,
 }
 
@@ -34,13 +35,13 @@ impl fmt::Display for LogError {
 impl Error for LogError {}
 
 /// Env variable arguments structure
-pub(crate) struct Args {
-    pub(crate) config_file: PathBuf,
-    pub(crate) log_dir: Option<PathBuf>,
+pub(in super::super) struct Args {
+    pub(in super::super) config_file: PathBuf,
+    pub(in super::super) log_dir: Option<PathBuf>,
 }
 
 impl Args {
-    pub(crate) fn new() -> Result<Self, String> {
+    pub(in super::super) fn new() -> Result<Self, String> {
         let config_file = match env::var("CONFIGURATION_DIRECTORY") {
             Ok(f) => PathBuf::from(f).join(CONFIG_FILE_NAME),
             Err(VarError::NotPresent) => return Err("Env variable \"CONFIGURATION_DIRECTORY\" not found".into()),
@@ -59,7 +60,7 @@ impl Args {
 
 /// Application configuration structure
 #[derive(Debug, Deserialize, Eq, PartialEq)]
-pub(crate) struct Configs {
+pub(in super::super) struct Configs {
     pub(super) port: u16,
     pub(super) udp: HashSet<Forwarders>,
     pub(super) tcp: HashSet<Forwarders>,
@@ -74,10 +75,10 @@ pub(super) struct Forwarders {
 }
 
 #[derive(PartialEq, Eq)]
-pub(crate) struct RuntimeConfigs {
-    pub(crate) port: u16,
-    pub(crate) udp_map: Arc<UdpMap>,
-    pub(crate) tcp_map: Arc<TcpMap>,
+pub(in super::super) struct RuntimeConfigs {
+    pub(in super::super) port: u16,
+    pub(in super::super) udp_map: Arc<UdpMap>,
+    pub(in super::super) tcp_map: Arc<TcpMap>,
 }
 
 impl From<&Configs> for RuntimeConfigs {
@@ -87,43 +88,43 @@ impl From<&Configs> for RuntimeConfigs {
             udp_map: Arc::new(UdpMap(
                 cfg.udp
                     .iter()
-                    .map(|u| (u.orig_port, (u.upstream_ip, u.upstream_port)))
+                    .map(|u| (u.orig_port, SocketAddrV4::new(u.upstream_ip, u.upstream_port)))
                     .collect(),
             )),
             tcp_map: Arc::new(TcpMap(
                 cfg.tcp
                     .iter()
-                    .map(|u| (u.orig_port, (u.upstream_ip, u.upstream_port)))
+                    .map(|u| (u.orig_port, SocketAddrV4::new(u.upstream_ip, u.upstream_port)))
                     .collect(),
             )),
         }
     }
 }
 
-pub(crate) trait ForwarderMap {
-    fn get(&self, k: &u16) -> Option<&(Ipv4Addr, u16)>;
-}
-
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct TcpMap(HashMap<u16, (Ipv4Addr, u16)>);
+pub(in super::super) struct TcpMap(HashMap<u16, SocketAddrV4>);
 
-impl ForwarderMap for TcpMap {
-    fn get(&self, k: &u16) -> Option<&(Ipv4Addr, u16)> {
-        self.0.get(k)
+impl Deref for TcpMap {
+    type Target = HashMap<u16, SocketAddrV4>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct UdpMap(HashMap<u16, (Ipv4Addr, u16)>);
+pub(in super::super) struct UdpMap(HashMap<u16, SocketAddrV4>);
 
-impl ForwarderMap for UdpMap {
-    fn get(&self, k: &u16) -> Option<&(Ipv4Addr, u16)> {
-        self.0.get(k)
+impl Deref for UdpMap {
+    type Target = HashMap<u16, SocketAddrV4>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
 #[derive(Clone)]
-pub(crate) enum Actions {
+pub(in super::super) enum Actions {
     INIT,
     RELOAD(bool),
     KILL,
@@ -213,23 +214,13 @@ mod tests {
 
         let runtime_configs = RuntimeConfigs::from(&configs);
         assert_eq!(outer_port, runtime_configs.port);
-        assert_eq!(HashMap::from([(inner_port, (ip, inner_port))]), runtime_configs.tcp_map.0);
-        assert_eq!(HashMap::from([(inner_port, (ip, inner_port))]), runtime_configs.udp_map.0);
-    }
-
-    #[test]
-    fn test_ForwarderMap_get() {
-        let ip = Ipv4Addr::from([10u8, 0u8, 0u8, 1u8]);
-        let port = 53u16;
-        let no_port = 123u16;
-        let map = HashMap::from([(port, (ip, port))]);
-
-        let tcp_map = TcpMap(map.clone());
-        assert_eq!(Some(&(ip, port)), tcp_map.get(&port));
-        assert_eq!(None, tcp_map.get(&no_port));
-
-        let udp_map = UdpMap(map.clone());
-        assert_eq!(Some(&(ip, port)), udp_map.get(&port));
-        assert_eq!(None, udp_map.get(&no_port));
+        assert_eq!(
+            HashMap::from([(inner_port, SocketAddrV4::new(ip, inner_port))]),
+            runtime_configs.tcp_map.0
+        );
+        assert_eq!(
+            HashMap::from([(inner_port, SocketAddrV4::new(ip, inner_port))]),
+            runtime_configs.udp_map.0
+        );
     }
 }

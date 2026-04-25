@@ -5,6 +5,8 @@ use std::{env, path::PathBuf};
 fn main() {
     println!("cargo::rerun-if-changed=wrappers/cap_wrapper.h");
 
+    println!("cargo::rustc-link-lib=dylib=cap");
+
     let target_os = env::var("CARGO_CFG_TARGET_OS").expect("CARGO_CFG_TARGET_OS not set");
 
     if target_os != "linux" {
@@ -15,14 +17,19 @@ fn main() {
         bindgen::Builder::default()
             .clang_arg("-fretain-comments-from-system-headers")
             .header("wrappers/cap_wrapper.h")
-            .allowlist_type("__user_cap_header_struct")
-            .allowlist_type("__user_cap_data_struct")
-            .allowlist_var("_LINUX_CAPABILITY_VERSION_3")
+            .allowlist_function("cap_get_proc")
+            .allowlist_function("cap_free")
+            .allowlist_function("cap_get_flag")
             .allowlist_var("CAP_NET_BIND_SERVICE")
             .allowlist_var("CAP_NET_ADMIN")
-            .derive_copy(false)
+            .rustified_enum(".*")
             .derive_debug(false)
             .derive_default(false)
+            .derive_eq(false)
+            .derive_hash(false)
+            .derive_ord(false)
+            .derive_partialeq(false)
+            .derive_partialord(false)
             .generate_comments(true)
             .generate()
             .expect("Unable to generate bindings for wrappers/cap_wrapper.h")

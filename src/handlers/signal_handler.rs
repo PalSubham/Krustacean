@@ -14,15 +14,16 @@ use tokio::{
     sync::watch::{Receiver, Sender},
 };
 
-use crate::utils::{
-    structs::{Actions, RuntimeConfigs},
-    utils::read_config,
+use super::{
+    super::utils::{
+        structs::{Actions, RuntimeConfigs},
+        utils::read_config,
+    },
+    constants::LISTEN_IP,
 };
 
-use super::constants::LISTEN_IP;
-
 /// Handles signals (SIGINT, SIGTERM, SIGQUIT & SIGHUP)
-pub(crate) async fn signal_handler(
+pub(in super::super) async fn signal_handler(
     tx: Sender<Actions>, mut rx: Receiver<Actions>, config_path: &PathBuf, current_config: Arc<ArcSwap<RuntimeConfigs>>,
 ) -> Result<()> {
     info!("Signal handler starting...");

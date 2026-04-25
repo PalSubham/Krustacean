@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use libc::{SYS_capget, syscall};
 use log::LevelFilter;
 use log4rs::{
     Handle,
@@ -11,62 +10,43 @@ use log4rs::{
     init_config,
 };
 use serde_json::from_str;
-use std::{
-    io::{Error, ErrorKind, Result as IoResult},
-    os::unix::fs::PermissionsExt,
-    path::PathBuf,
-};
+use std::{io, path::PathBuf};
 use tokio::fs::read_to_string;
 
 use super::{
-    cap_bindings::{__user_cap_data_struct, cap_to_index, cap_to_mask},
-    constants::{CAP_HEADER, LOG_FILE_NAME, REQUIRED_CAPS},
+    cap_bindings::{CapFlag, check_cap},
+    constants::{LOG_FILE_NAME, REQUIRED_CAPS},
     structs::{Configs, LogError},
 };
 
 /// Checks if required capabilities are effective
-///
-/// * A total of 64 capabilities are there
-/// * Each field of each [`__user_cap_data_struct`] holds 32 of them as u32 bitmap (Hence, two are used)
-/// * When enabled, the corresponding bit in that field is 1
-/// * Here we are using [`__user_cap_data_struct::effective`] for our purpose
-pub(crate) fn is_capable() -> IoResult<bool> {
-    let mut data = <[__user_cap_data_struct; 2] as Default>::default();
-
-    match unsafe { syscall(SYS_capget, &*CAP_HEADER as *const _, &mut data as *mut _) } {
-        0 => Ok(REQUIRED_CAPS
-            .iter()
-            .all(|&cap| (data[cap_to_index(cap)].effective & cap_to_mask(cap)) != 0)),
-        _ => Err(Error::last_os_error()),
-    }
+pub(in super::super) fn is_capable() -> io::Result<bool> {
+    check_cap(&REQUIRED_CAPS, CapFlag::CAP_EFFECTIVE)
 }
 
 /// Read and parse configuration file
-pub(crate) async fn read_config(path: &PathBuf) -> IoResult<Configs> {
+pub(in super::super) async fn read_config(path: &PathBuf) -> io::Result<Configs> {
     if !path.exists() {
-        return Err(Error::new(ErrorKind::NotFound, "Configuration file not found"));
+        return Err(io::Error::new(io::ErrorKind::NotFound, "Configuration file not found"));
     } else if !path.is_file() {
-        return Err(Error::new(ErrorKind::InvalidInput, "Provided configuration path is not a file"));
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "Provided configuration path is not a file"));
     }
 
-    from_str(&read_to_string(path).await?).map_err(|e| Error::new(ErrorKind::InvalidData, format!("Failed to deserialize configuration file - {e}")))
+    from_str(&read_to_string(path).await?)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Failed to deserialize configuration file - {e}")))
 }
 
 /// Enable logging based on provided optional log directory. If provided it logs to file, else falls back to console logging
-pub(crate) fn enable_logging(log_dir: Option<&PathBuf>) -> Result<Handle, LogError> {
+pub(in super::super) fn enable_logging(log_dir: Option<&PathBuf>) -> Result<Handle, LogError> {
     let config = match log_dir {
         Some(dir) => {
-            if !dir.exists() {
-                return Err(LogError::cause("Log directory not found"));
-            } else if !dir.is_dir() {
-                return Err(LogError::cause("Provided log directory is not a directory"));
-            }
-
             let metadata = dir
                 .metadata()
-                .map_err(|_| LogError::cause("Failed to fetch log directory metadata"))?;
-            let readonly = metadata.permissions().mode() & 0o200 == 0;
-            if readonly {
+                .map_err(|_| LogError::cause("Log directory not found"))?;
+
+            if !metadata.is_dir() {
+                return Err(LogError::cause("Provided log directory is not a directory"));
+            } else if metadata.permissions().readonly() {
                 return Err(LogError::cause("Provided log directory is readonly for the user"));
             }
 
@@ -81,22 +61,24 @@ pub(crate) fn enable_logging(log_dir: Option<&PathBuf>) -> Result<Handle, LogErr
                         .filter(Box::new(ThresholdFilter::new(LevelFilter::Info)))
                         .build("file", Box::new(file)),
                 )
-                .build(Root::builder().appender("file").build(LevelFilter::max()))
+                .build(Root::builder().appender("file").build(LevelFilter::Info))
                 .map_err(|_| LogError::cause("Failed to create FileAppender log config"))?
         },
         None => {
-            let console = ConsoleAppender::builder().build();
+            let console = ConsoleAppender::builder()
+                .encoder(Box::new(PatternEncoder::default()))
+                .build();
 
             Config::builder()
                 .appender(
                     Appender::builder()
-                        .filter(Box::new(ThresholdFilter::new(LevelFilter::Info)))
+                        .filter(Box::new(ThresholdFilter::new(LevelFilter::Debug)))
                         .build("console", Box::new(console)),
                 )
                 .build(
                     Root::builder()
                         .appender("console")
-                        .build(LevelFilter::max()),
+                        .build(LevelFilter::Debug),
                 )
                 .map_err(|_| LogError::cause("Failed to create ConsoleAppender log config"))?
         },
@@ -110,7 +92,7 @@ macro_rules! banner {
     ($file:literal) => {
         #[cfg(not(test))]
         {
-            let pid_string = (*$crate::utils::constants::PID).to_string();
+            let pid_string = ::std::process::id().to_string();
             let banner = ::const_format::str_replace!(::std::include_str!($file), "@project_version@", ::std::env!("CARGO_PKG_VERSION"))
                 .replace("@pid@", &pid_string);
             ::log::info!("{banner}");
@@ -120,7 +102,7 @@ macro_rules! banner {
     };
 }
 
-pub(crate) use banner;
+pub(in super::super) use banner;
 
 #[cfg(test)]
 mod tests {
@@ -142,12 +124,12 @@ mod tests {
         assert!(!file_path_nonexistent.exists());
         let mut result = read_config(&file_path_nonexistent).await;
         assert!(result.is_err());
-        assert_eq!(ErrorKind::NotFound, result.unwrap_err().kind());
+        assert_eq!(io::ErrorKind::NotFound, result.unwrap_err().kind());
 
         // not a file
         result = read_config(&dir_path).await;
         assert!(result.is_err());
-        assert_eq!(ErrorKind::InvalidInput, result.unwrap_err().kind());
+        assert_eq!(io::ErrorKind::InvalidInput, result.unwrap_err().kind());
 
         // using actual file
         let file_path = dir_path.join("config.conf");
@@ -157,7 +139,7 @@ mod tests {
         write(&file_path, b"abcd").await.unwrap();
         result = read_config(&file_path).await;
         assert!(result.is_err());
-        assert_eq!(ErrorKind::InvalidData, result.unwrap_err().kind());
+        assert_eq!(io::ErrorKind::InvalidData, result.unwrap_err().kind());
 
         let conf = json!({
             "port": 8080,
