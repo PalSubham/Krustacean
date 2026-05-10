@@ -22,7 +22,8 @@ pub(super) fn check_cap<const N: usize>(required_caps: &[u32; N], flag: CapFlag)
 
             match unsafe { cap_get_flag(caps, cap as _, flag, &mut value as *mut _) } {
                 0 => Ok(acc && (value == cap_flag_value_t::CAP_SET)),
-                _ => Err(Error::last_os_error()),
+                -1 => Err(Error::last_os_error()),
+                _ => unreachable!("Impossible return values from cap_get_flag"),
             }
         });
 
